@@ -32,6 +32,40 @@ What mounting through the gateway adds:
   when there is one. **Tool arguments and results are never written**;
   gateway-originated error text is token-scrubbed first. Size-based rotation.
 
+## Why this matters (the user's view)
+
+Without a gateway, every capability you install gets a copy of your keys. The
+weather app holds your PurpleAir key; the calendar app holds a token with
+permanent access to your Google calendars. Trusting an app means trusting it
+completely — and "revoking access" means hoping the app respects your wishes.
+
+Under the gateway, apps don't hold keys. They hold something more like a hotel
+room card:
+
+- **The card only opens your door.** When an app wants data, it asks the front
+  desk (the broker) to make the call. The desk checks that this app is allowed
+  to use this account and that it's calling the real service — not somewhere
+  sketchy — and only then attaches your key. The app never sees it. A
+  compromised app can't steal the key or point it anywhere else.
+- **Cancelling the card works instantly.** Revoke an app's grant and its very
+  next request is refused — no restarts, no wondering whether it kept a copy.
+  There is no copy.
+- **For Google, apps get a visitor badge, not the master key.** Instead of a
+  forever-token, an app gets an access token that expires within the hour; the
+  refresh token stays in the desk's safe. A leaked badge dies quickly and
+  can't mint more of itself.
+- **There's a logbook at the desk.** Every credential use is recorded — which
+  app, which service, when, allowed or refused — without ever recording your
+  data or your keys. "What has this app been doing with my accounts?" has an
+  answer.
+
+The payoff is what it makes possible: installing capabilities *other people
+wrote*. The worst-case cost of trying a new app drops from "it had my keys" to
+"it had a visitor badge, briefly, for one door — and I have the logbook."
+Day to day you notice almost nothing: same tools, same answers. Hosted, the
+same design becomes a hard boundary — the sandbox makes the broker an app's
+only door to the outside world.
+
 ## Install and run
 
 ```sh
