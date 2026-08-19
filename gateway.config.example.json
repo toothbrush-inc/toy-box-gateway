@@ -6,6 +6,7 @@
       "args": ["apps/cli/dist/cli.js", "mcp"],
       "cwd": "/Users/dvd/code/davidd8/calsync-oss",
       "manifestPath": "/Users/dvd/code/davidd8/calsync-oss/apps/cli/capability.json",
+      "secretsAccess": "broker",
       "denyTools": ["sync_now"]
     },
     {
