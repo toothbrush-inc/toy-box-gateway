@@ -13,8 +13,14 @@
       "command": "node",
       "args": ["mcp/server.mjs"],
       "cwd": "/Users/dvd/code/davidd8/weather-compare",
-      "manifestPath": "/Users/dvd/code/davidd8/weather-compare/capability.json"
+      "manifestPath": "/Users/dvd/code/davidd8/weather-compare/capability.json",
+      "secretsAccess": "broker"
     }
   ],
-  "audit": { "maxBytes": 5242880, "keepFiles": 5 }
+  "audit": { "maxBytes": 5242880, "keepFiles": 5 },
+  "oauth": {
+    "google": {
+      "envFile": "/Users/dvd/code/davidd8/calsync-oss/.env"
+    }
+  }
 }

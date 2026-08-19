@@ -22,14 +22,21 @@ export interface MountedCapability {
 
 export type TransportFactory = (spec: CapabilitySpec) => Transport;
 
+export interface ChildEgress {
+  url: string;
+  token: string;
+}
+
 /**
  * Child env: per-spec entries, then the gateway's vault location passthrough,
- * then the non-negotiable explicit grant mode. The SDK merges this over its
+ * then the egress endpoint, then the non-negotiable explicit grant mode (and
+ * broker-only secrets access when configured). The SDK merges this over its
  * safe default environment.
  */
 export function buildChildEnv(
   spec: CapabilitySpec,
   env: NodeJS.ProcessEnv = process.env,
+  egress?: ChildEgress,
 ): Record<string, string> {
   const child: Record<string, string> = { ...(spec.env ?? {}) };
   const vaultHome = env["VAULT_HOME"];
@@ -40,18 +47,26 @@ export function buildChildEnv(
   if (backend !== undefined && backend.trim() !== "") {
     child["VAULT_SECRETS_BACKEND"] = backend;
   }
+  if (egress !== undefined) {
+    child["VAULT_EGRESS_URL"] = egress.url;
+    child["VAULT_EGRESS_TOKEN"] = egress.token;
+  }
   child["VAULT_GRANT_MODE"] = "explicit";
+  if (spec.secretsAccess === "broker") {
+    child["VAULT_SECRETS_ACCESS"] = "broker";
+  }
   return child;
 }
 
 export function buildStdioTransport(
   spec: CapabilitySpec,
   env: NodeJS.ProcessEnv = process.env,
+  egress?: ChildEgress,
 ): StdioClientTransport {
   const parameters: StdioServerParameters = {
     command: spec.command,
     args: [...spec.args],
-    env: buildChildEnv(spec, env),
+    env: buildChildEnv(spec, env, egress),
     stderr: "pipe",
   };
   if (spec.cwd !== undefined) {
@@ -66,6 +81,7 @@ export interface ChildManagerOptions {
   log: (line: string) => void;
   env?: NodeJS.ProcessEnv;
   version?: string;
+  egressFor?: (capabilityId: string) => ChildEgress | undefined;
 }
 
 export class ChildManager {
@@ -151,7 +167,8 @@ export class ChildManager {
       );
       const factory =
         this.options.transportFactory ??
-        ((forSpec: CapabilitySpec) => buildStdioTransport(forSpec, this.options.env));
+        ((forSpec: CapabilitySpec) =>
+          buildStdioTransport(forSpec, this.options.env, this.options.egressFor?.(forSpec.id)));
       const transport = factory(spec);
       this.attachStderr(spec.id, transport);
       client.onclose = () => {

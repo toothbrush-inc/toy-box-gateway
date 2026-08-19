@@ -106,11 +106,40 @@ Client config (Cursor / Claude Desktop), same shape as any stdio MCP server:
 - Config errors, child stderr, and mount failures go to the gateway's stderr,
   prefixed `[<capability>]`.
 
-## Future (not in this MVP)
+## Egress broker
 
-Rate limits per grant; brokered egress — attaching secrets only to
-allowlisted hosts so capabilities never see raw keys (today children still
-read secrets in-process); hosted mode with an install/grant UI. See
+The gateway also runs a localhost **egress broker** and hands each child its
+endpoint via `VAULT_EGRESS_URL` + a per-capability `VAULT_EGRESS_TOKEN`:
+
+- **`POST /fetch`** — credentialed GET on the capability's behalf. The broker
+  validates the capability's manifest `egress` declaration (host allowlist),
+  checks the grant on every call (revocation takes effect immediately),
+  attaches the credential (header or query param, with optional public→keyed
+  host rewrite like Open-Meteo's customer hosts), scrubs the secret from the
+  response body, and audits `egress:<provider>` with the requested host —
+  never full URLs. Upstream non-2xx comes back as data; broker denials are
+  coded (`grant_missing`, `egress_host_denied`, …).
+- **`POST /token`** — OAuth token exchange: the broker holds the durable
+  refresh token (and the OAuth client credentials, read at startup from the
+  env file named in the gateway config's `oauth.google` block) and hands the
+  capability a short-lived access token, cached until just before expiry. A
+  child never sees the refresh token; a leaked access token dies within the
+  hour. `invalid_grant` maps to an actionable `token_revoked`.
+- **`secretsAccess: "broker"`** per capability spawns the child with
+  `VAULT_SECRETS_ACCESS=broker`, making fetch-path vault reads throw so a
+  code path that bypasses the broker fails loudly. Masked status reads keep
+  working.
+
+This is the hosted-security seam: locally the boundary is cooperative (a
+process under your OS user could still read the vault); hosted, the same
+capability code runs in a sandbox whose only network path is the broker.
+
+## Future (not built)
+
+Rate limits per grant; calsync's internal adoption of `/token` (a
+BrokeredAuthClient for googleapis — until then calsync reads its refresh
+token in-process under explicit grants); non-GET egress and streaming bodies;
+OS sandboxing; hosted mode with an install/grant UI. See
 [local-vault FUTURE.md](https://github.com/davidd8/local-vault/blob/main/FUTURE.md).
 
 ## Development

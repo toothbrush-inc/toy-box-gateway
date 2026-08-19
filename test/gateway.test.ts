@@ -237,6 +237,7 @@ describe("gateway", () => {
       grants: [
         { id: "weather:purpleair:default", connectionId: "purpleair:default", actions: ["read"] },
       ],
+      egress: { enabled: false, hosts: [] },
     });
   });
 

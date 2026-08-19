@@ -1,6 +1,6 @@
 {
   "name": "@local/capability-gateway",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "description": "Local capability gateway: mounts capability MCP servers, enforces grants and tool policy, audits calls",
   "type": "module",
@@ -15,7 +15,12 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist", "src", "README.md", "gateway.config.example.json"],
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "gateway.config.example.json"
+  ],
   "engines": {
     "node": ">=20"
   },

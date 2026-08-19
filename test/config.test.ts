@@ -29,6 +29,27 @@ describe("GatewayConfigSchema", () => {
     expect(parsed.audit).toEqual({ maxBytes: 5 * 1024 * 1024, keepFiles: 5 });
   });
 
+  it("parses secretsAccess and oauth, requiring manifestPath for broker mode", () => {
+    expect(() =>
+      GatewayConfigSchema.parse({
+        capabilities: [{ id: "weather", command: "node", secretsAccess: "broker" }],
+      }),
+    ).toThrow(/requires manifestPath/);
+
+    const parsed = GatewayConfigSchema.parse({
+      capabilities: [
+        { id: "weather", command: "node", manifestPath: "/x/capability.json", secretsAccess: "broker" },
+      ],
+      oauth: { google: { envFile: "/x/.env" } },
+    });
+    expect(parsed.capabilities[0]?.secretsAccess).toBe("broker");
+    expect(parsed.oauth?.google).toEqual({
+      envFile: "/x/.env",
+      clientIdVar: "GOOGLE_OAUTH_CLIENT_ID",
+      clientSecretVar: "GOOGLE_OAUTH_CLIENT_SECRET",
+    });
+  });
+
   it("rejects duplicate ids, the prefix separator, and the reserved id", () => {
     expect(() =>
       GatewayConfigSchema.parse({ capabilities: [validCapability, validCapability] }),

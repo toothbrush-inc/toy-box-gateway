@@ -22,6 +22,9 @@ export const CapabilitySpecSchema = z.object({
   allowTools: z.array(z.string().min(1)).optional(),
   denyTools: z.array(z.string().min(1)).optional(),
   manifestPath: z.string().min(1).optional(),
+  secretsAccess: z.enum(["broker"]).optional(),
+}).refine((spec) => spec.secretsAccess === undefined || spec.manifestPath !== undefined, {
+  message: 'secretsAccess: "broker" requires manifestPath (the egress specs live in the manifest)',
 });
 
 export const GatewayConfigSchema = z.object({
@@ -39,6 +42,17 @@ export const GatewayConfigSchema = z.object({
       keepFiles: z.number().int().min(0).default(DEFAULT_AUDIT_KEEP_FILES),
     })
     .default({ maxBytes: DEFAULT_AUDIT_MAX_BYTES, keepFiles: DEFAULT_AUDIT_KEEP_FILES }),
+  oauth: z
+    .object({
+      google: z
+        .object({
+          envFile: z.string().min(1),
+          clientIdVar: z.string().min(1).default("GOOGLE_OAUTH_CLIENT_ID"),
+          clientSecretVar: z.string().min(1).default("GOOGLE_OAUTH_CLIENT_SECRET"),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 export type CapabilitySpec = z.infer<typeof CapabilitySpecSchema>;

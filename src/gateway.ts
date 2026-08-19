@@ -14,15 +14,22 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { AuditWriter, type AuditEntry } from "./audit.js";
-import { ChildManager, type TransportFactory } from "./children.js";
+import { ChildManager, type ChildEgress, type TransportFactory } from "./children.js";
 import type { CapabilitySpec, GatewayConfig } from "./config.js";
+import {
+  EgressServer,
+  loadEgressSpecs,
+  loadGoogleOAuthCreds,
+  newEgressToken,
+  type GoogleOAuthCreds,
+} from "./egress.js";
 import { resolveGatewayHome } from "./home.js";
 import { evaluatePolicy } from "./policy.js";
 import { parsePrefixedName, ToolRegistry } from "./registry.js";
 import { redactErrorMessage } from "./redact.js";
 import { buildGatewayStatus } from "./status.js";
 
-export const GATEWAY_VERSION = "0.1.0";
+export const GATEWAY_VERSION = "0.2.0";
 
 const GATEWAY_STATUS_TOOL: Tool = {
   name: "gateway_status",
@@ -58,6 +65,9 @@ export interface Gateway {
   server: Server;
   children: ChildManager;
   audit: AuditWriter;
+  egress: EgressServer;
+  /** Test/E2E hook: the egress bearer token for one capability. */
+  egressTokenFor(capabilityId: string): string | undefined;
   connect(transport: Transport): Promise<void>;
   close(): Promise<void>;
 }
@@ -113,6 +123,27 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
   const registry = new ToolRegistry();
   let upstreamConnected = false;
 
+  const egressSpecs = loadEgressSpecs(config.capabilities, log);
+  const tokenByCapability = new Map<string, string>(
+    config.capabilities.map((capability) => [capability.id, newEgressToken()]),
+  );
+  const capabilityByToken = new Map<string, string>(
+    [...tokenByCapability].map(([capability, token]) => [token, capability]),
+  );
+  let oauth: { google: GoogleOAuthCreds } | undefined;
+  if (config.oauth?.google !== undefined) {
+    oauth = { google: loadGoogleOAuthCreds(config.oauth.google) };
+  }
+  const egressServer = new EgressServer({
+    tokens: capabilityByToken,
+    specs: egressSpecs,
+    env,
+    audit,
+    log,
+    ...(oauth === undefined ? {} : { oauth }),
+  });
+  const egressUrl = await egressServer.listen();
+
   function rebuild(): void {
     const connected = children
       .list()
@@ -127,6 +158,10 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     env,
     log,
     version,
+    egressFor: (capabilityId: string): ChildEgress | undefined => {
+      const token = tokenByCapability.get(capabilityId);
+      return token === undefined ? undefined : { url: egressUrl, token };
+    },
     onToolsChanged: () => {
       rebuild();
       if (upstreamConnected) {
@@ -182,6 +217,13 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
         specs,
         (capabilityId) => registry.deniedTools(capabilityId),
         env,
+        (capabilityId) => {
+          const entries = egressSpecs.get(capabilityId)?.egress ?? [];
+          return {
+            enabled: entries.length > 0,
+            hosts: [...new Set(entries.flatMap((entry) => entry.hosts))],
+          };
+        },
       );
       record({ capability: "gateway", tool: name, outcome: "ok" });
       return jsonResult(status);
@@ -309,6 +351,8 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
     server,
     children,
     audit,
+    egress: egressServer,
+    egressTokenFor: (capabilityId: string) => tokenByCapability.get(capabilityId),
     async connect(transport: Transport): Promise<void> {
       await server.connect(transport);
       upstreamConnected = true;
@@ -317,6 +361,7 @@ export async function createGateway(options: GatewayOptions): Promise<Gateway> {
       upstreamConnected = false;
       await children.close();
       await server.close();
+      await egressServer.close();
     },
   };
 }

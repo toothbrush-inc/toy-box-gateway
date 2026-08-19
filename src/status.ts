@@ -17,6 +17,11 @@ export interface GrantSummary {
   actions: string[];
 }
 
+export interface CapabilityEgressStatus {
+  enabled: boolean;
+  hosts: string[];
+}
+
 export interface CapabilityStatus {
   id: string;
   state: ChildState;
@@ -26,6 +31,7 @@ export interface CapabilityStatus {
   connected_at: string | null;
   manifest: ManifestCheck;
   grants: GrantSummary[];
+  egress: CapabilityEgressStatus;
 }
 
 /** Warn-only: manifest problems never block mounting (per CAPABILITY.md). */
@@ -87,6 +93,10 @@ export function buildGatewayStatus(
   specs: ReadonlyMap<string, CapabilitySpec>,
   deniedTools: (capabilityId: string) => string[],
   env: NodeJS.ProcessEnv = process.env,
+  egressInfo: (capabilityId: string) => CapabilityEgressStatus = () => ({
+    enabled: false,
+    hosts: [],
+  }),
 ): { ok: true; data: { capabilities: CapabilityStatus[] } } {
   const capabilities: CapabilityStatus[] = mounted.map((child) => {
     const spec = specs.get(child.id);
@@ -102,6 +112,7 @@ export function buildGatewayStatus(
       manifest:
         spec === undefined ? { checked: false, warnings: [] } : checkManifest(spec, env),
       grants: readGrantSummary(child.id, env),
+      egress: egressInfo(child.id),
     };
   });
   return { ok: true, data: { capabilities } };

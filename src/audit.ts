@@ -14,9 +14,10 @@ import { DEFAULT_AUDIT_KEEP_FILES, DEFAULT_AUDIT_MAX_BYTES } from "./config.js";
 export type AuditOutcome = "ok" | "error" | "denied";
 
 /**
- * One line per tool call. Tool arguments and result contents never appear
- * here — the writer accepts only this shape, and `error` carries only
- * gateway/transport-originated messages after redaction.
+ * One line per tool call or egress request. Tool arguments, result contents,
+ * and full URLs never appear here — the writer accepts only this shape,
+ * `host` is a bare hostname, and `error` carries only gateway/transport-
+ * originated messages after redaction.
  */
 export interface AuditEntry {
   ts: string;
@@ -24,9 +25,10 @@ export interface AuditEntry {
   tool: string;
   outcome: AuditOutcome;
   duration_ms: number;
-  denied_by?: "policy";
+  denied_by?: "policy" | "egress";
   error_code?: string;
   error?: string;
+  host?: string;
 }
 
 export interface AuditWriterOptions {
