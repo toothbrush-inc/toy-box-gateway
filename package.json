@@ -1,0 +1,45 @@
+{
+  "name": "@local/capability-gateway",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Local capability gateway: mounts capability MCP servers, enforces grants and tool policy, audits calls",
+  "type": "module",
+  "bin": {
+    "capability-gateway": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "src", "README.md", "gateway.config.example.json"],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist coverage",
+    "prepare": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@local/vault": "github:davidd8/local-vault",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/davidd8/capability-gateway.git"
+  },
+  "license": "MIT"
+}

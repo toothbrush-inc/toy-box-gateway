@@ -1,0 +1,20 @@
+{
+  "capabilities": [
+    {
+      "id": "calsync",
+      "command": "node",
+      "args": ["apps/cli/dist/cli.js", "mcp"],
+      "cwd": "/Users/dvd/code/davidd8/calsync-oss",
+      "manifestPath": "/Users/dvd/code/davidd8/calsync-oss/apps/cli/capability.json",
+      "denyTools": ["sync_now"]
+    },
+    {
+      "id": "weather",
+      "command": "node",
+      "args": ["mcp/server.mjs"],
+      "cwd": "/Users/dvd/code/davidd8/weather-compare",
+      "manifestPath": "/Users/dvd/code/davidd8/weather-compare/capability.json"
+    }
+  ],
+  "audit": { "maxBytes": 5242880, "keepFiles": 5 }
+}
