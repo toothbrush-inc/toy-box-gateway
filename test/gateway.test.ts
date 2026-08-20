@@ -114,9 +114,11 @@ describe("gateway", () => {
         "gateway_reconnect",
         "gateway_get_profile",
         "gateway_set_profile",
+        "gateway_grant",
+        "gateway_revoke_grant",
       ]),
     );
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(10);
     const echo = listed.tools.find((tool) => tool.name === "weather__echo");
     expect(echo?.description).toBe("Echoes input");
     expect(echo?.inputSchema).toMatchObject({
@@ -241,6 +243,34 @@ describe("gateway", () => {
       ],
       egress: { enabled: false, hosts: [] },
     });
+  });
+
+  it("grants and revokes connection access conversationally", async () => {
+    const harness = await startHarness();
+    const granted = await harness.client.callTool(
+      { name: "gateway_grant", arguments: { capability: "weather", connection: "purpleair:default", actions: ["read"] } },
+      CallToolResultSchema,
+    );
+    expect(granted.structuredContent).toMatchObject({
+      ok: true,
+      data: { grant: { id: "weather:purpleair:default", actions: ["read"] } },
+    });
+    expect(
+      openVault({ home: harness.vaultHome, backend: "file" }).listGrants("weather"),
+    ).toMatchObject([{ connectionId: "purpleair:default" }]);
+
+    const revoked = await harness.client.callTool(
+      { name: "gateway_revoke_grant", arguments: { capability: "weather", connection: "purpleair:default" } },
+      CallToolResultSchema,
+    );
+    expect(revoked.structuredContent).toMatchObject({ ok: true, data: { revoked: true } });
+    expect(openVault({ home: harness.vaultHome, backend: "file" }).listGrants("weather")).toEqual([]);
+
+    const invalid = await harness.client.callTool(
+      { name: "gateway_grant", arguments: { capability: "nope", connection: "x:y" } },
+      CallToolResultSchema,
+    );
+    expect(invalid.structuredContent).toMatchObject({ ok: false, error: { code: "invalid_grant_request" } });
   });
 
   it("marks a dead child offline, drops its tools, and revives it via gateway_reconnect", async () => {

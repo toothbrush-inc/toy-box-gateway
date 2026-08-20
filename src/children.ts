@@ -37,8 +37,10 @@ export function buildChildEnv(
   spec: CapabilitySpec,
   env: NodeJS.ProcessEnv = process.env,
   egress?: ChildEgress,
+  extraEnv?: Record<string, string>,
 ): Record<string, string> {
-  const child: Record<string, string> = { ...(spec.env ?? {}) };
+  // Provisioned env first; the capability's own spec.env always wins.
+  const child: Record<string, string> = { ...(extraEnv ?? {}), ...(spec.env ?? {}) };
   const vaultHome = env["VAULT_HOME"];
   if (vaultHome !== undefined && vaultHome.trim() !== "") {
     child["VAULT_HOME"] = vaultHome;
@@ -62,11 +64,12 @@ export function buildStdioTransport(
   spec: CapabilitySpec,
   env: NodeJS.ProcessEnv = process.env,
   egress?: ChildEgress,
+  extraEnv?: Record<string, string>,
 ): StdioClientTransport {
   const parameters: StdioServerParameters = {
     command: spec.command,
     args: [...spec.args],
-    env: buildChildEnv(spec, env, egress),
+    env: buildChildEnv(spec, env, egress, extraEnv),
     stderr: "pipe",
   };
   if (spec.cwd !== undefined) {
@@ -82,6 +85,7 @@ export interface ChildManagerOptions {
   env?: NodeJS.ProcessEnv;
   version?: string;
   egressFor?: (capabilityId: string) => ChildEgress | undefined;
+  extraEnvFor?: (capabilityId: string) => Record<string, string> | undefined;
 }
 
 export class ChildManager {
@@ -168,7 +172,12 @@ export class ChildManager {
       const factory =
         this.options.transportFactory ??
         ((forSpec: CapabilitySpec) =>
-          buildStdioTransport(forSpec, this.options.env, this.options.egressFor?.(forSpec.id)));
+          buildStdioTransport(
+            forSpec,
+            this.options.env,
+            this.options.egressFor?.(forSpec.id),
+            this.options.extraEnvFor?.(forSpec.id),
+          ));
       const transport = factory(spec);
       this.attachStderr(spec.id, transport);
       client.onclose = () => {

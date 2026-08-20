@@ -66,7 +66,7 @@ describe("GatewayConfigSchema", () => {
 describe("loadGatewayConfig", () => {
   it("parses the shipped example config", () => {
     const config = loadGatewayConfig(resolve(import.meta.dirname, "../gateway.config.example.json"));
-    expect(config.capabilities.map((cap) => cap.id)).toEqual(["calsync", "weather"]);
+    expect(config.capabilities.map((cap) => cap.id)).toEqual(["calsync", "weather", "fitness"]);
     expect(config.capabilities[0]?.denyTools).toEqual(["sync_now"]);
     expect(config.audit.maxBytes).toBe(5242880);
   });

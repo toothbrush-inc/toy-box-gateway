@@ -32,4 +32,15 @@ describe("buildChildEnv", () => {
       VAULT_GRANT_MODE: "explicit",
     });
   });
+
+  it("merges provisioned env under spec.env (spec wins)", () => {
+    const env = buildChildEnv(
+      { id: "books", command: "n", args: [], env: { BOOKS_DB: "/custom/books.json" } },
+      {},
+      undefined,
+      { BOOKS_DB: "/data/books/books.json", BOOKS_GAPS: "/data/books/gaps.json" },
+    );
+    expect(env["BOOKS_DB"]).toBe("/custom/books.json");
+    expect(env["BOOKS_GAPS"]).toBe("/data/books/gaps.json");
+  });
 });

@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -42,7 +43,7 @@ import { parsePrefixedName, ToolRegistry } from "./registry.js";
 import { redactErrorMessage } from "./redact.js";
 import { buildGatewayStatus } from "./status.js";
 
-export const GATEWAY_VERSION = "0.4.0";
+export const GATEWAY_VERSION = "0.5.0";
 
 type CallExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -95,6 +96,36 @@ const GATEWAY_SET_PROFILE_TOOL: Tool = {
     },
   },
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+};
+
+const GATEWAY_GRANT_TOOL: Tool = {
+  name: "gateway_grant",
+  description:
+    "Grant a capability access to a connection (e.g. its declared profile fields). Actions default to what the capability's manifest declares for that connection.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      capability: { type: "string", description: "Configured capability id" },
+      connection: { type: "string", description: "Connection id, e.g. profile:default or purpleair:default" },
+      actions: { type: "array", items: { type: "string" }, description: "Override the manifest's declared actions" },
+    },
+    required: ["capability", "connection"],
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+};
+
+const GATEWAY_REVOKE_GRANT_TOOL: Tool = {
+  name: "gateway_revoke_grant",
+  description: "Revoke one capability's grant for one connection. Takes effect on the next call; data is never deleted.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      capability: { type: "string" },
+      connection: { type: "string" },
+    },
+    required: ["capability", "connection"],
+  },
+  annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 };
 
 /** Who is calling, for audit attribution. Populated by the HTTP layer. */
@@ -240,10 +271,32 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
     }
   }
 
+  // Data-dir provisioning: manifests declare their ledgers' env vars; the
+  // gateway provisions <dataDir>/<id>/ and injects the paths, so config
+  // entries no longer repeat every app env var. spec.env still overrides.
+  const provisionedEnv = new Map<string, Record<string, string>>();
+  if (config.dataDir !== undefined) {
+    for (const [capabilityId, info] of egressSpecs) {
+      const ledgers = (info.data?.private ?? []).filter((entry) => entry.env !== undefined);
+      if (ledgers.length === 0) {
+        continue;
+      }
+      const dir = join(config.dataDir, capabilityId);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      provisionedEnv.set(
+        capabilityId,
+        Object.fromEntries(
+          ledgers.map((entry) => [entry.env, join(dir, entry.file ?? `${entry.name}.json`)]),
+        ) as Record<string, string>,
+      );
+    }
+  }
+
   const childOptions: ConstructorParameters<typeof ChildManager>[1] = {
     env,
     log,
     version,
+    extraEnvFor: (capabilityId: string) => provisionedEnv.get(capabilityId),
     egressFor: (capabilityId: string): ChildEgress | undefined => {
       const token = tokenByCapability.get(capabilityId);
       return token === undefined ? undefined : { url: egressUrl, token };
@@ -271,6 +324,8 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
       GATEWAY_RECONNECT_TOOL,
       GATEWAY_GET_PROFILE_TOOL,
       GATEWAY_SET_PROFILE_TOOL,
+      GATEWAY_GRANT_TOOL,
+      GATEWAY_REVOKE_GRANT_TOOL,
     ],
     attachSession: (session) => sessions.add(session),
     detachSession: (session) => sessions.delete(session),
@@ -426,6 +481,47 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
           "reconnect_failed",
           `capability '${target}' failed to reconnect: ${mounted.lastError ?? "unknown error"}`,
         );
+      }
+
+      if (name === GATEWAY_GRANT_TOOL.name || name === GATEWAY_REVOKE_GRANT_TOOL.name) {
+        const args = request.params.arguments ?? {};
+        const capability = args["capability"];
+        const connection = args["connection"];
+        if (
+          typeof capability !== "string" ||
+          specs.get(capability) === undefined ||
+          typeof connection !== "string" ||
+          !/^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/u.test(connection)
+        ) {
+          record({ capability: "gateway", tool: name, outcome: "error", error_code: "invalid_grant_request" });
+          return errorResult(
+            "invalid_grant_request",
+            `pass a configured capability id (${[...specs.keys()].join(", ")}) and a connection id like profile:default`,
+          );
+        }
+        if (name === GATEWAY_REVOKE_GRANT_TOOL.name) {
+          const removed = openVault({ env }).revokeGrant(capability, connection);
+          record({ capability: "gateway", tool: name, outcome: "ok", fields: [connection] });
+          return jsonResult({ ok: true, data: { capability, connection, revoked: removed } });
+        }
+        const declared = egressSpecs
+          .get(capability)
+          ?.connections.find((need) => `${need.provider}:${need.slot}` === connection);
+        const rawActions = args["actions"];
+        const actions = Array.isArray(rawActions)
+          ? rawActions.filter((action): action is string => typeof action === "string")
+          : declared?.actions ?? [];
+        const grant = openVault({ env }).putGrant({ capability, connectionId: connection, actions });
+        record({ capability: "gateway", tool: name, outcome: "ok", fields: [connection] });
+        return jsonResult({
+          ok: true,
+          data: {
+            grant: { id: grant.id, capability: grant.capability, connectionId: grant.connectionId, actions: grant.actions },
+            ...(declared === undefined
+              ? { note: `capability '${capability}' does not declare ${connection} in its manifest; granted anyway` }
+              : {}),
+          },
+        });
       }
 
       const parsed = parsePrefixedName(name);

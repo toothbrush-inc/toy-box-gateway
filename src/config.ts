@@ -43,6 +43,7 @@ export const GatewayConfigSchema = z.object({
     })
     .default({ maxBytes: DEFAULT_AUDIT_MAX_BYTES, keepFiles: DEFAULT_AUDIT_KEEP_FILES }),
   commons: z.object({ dir: z.string().min(1) }).optional(),
+  dataDir: z.string().min(1).optional(),
   oauth: z
     .object({
       google: z
