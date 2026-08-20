@@ -29,6 +29,9 @@ export interface AuditEntry {
   error_code?: string;
   error?: string;
   host?: string;
+  session_id?: string;
+  client_id?: string;
+  user?: string;
 }
 
 export interface AuditWriterOptions {

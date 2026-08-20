@@ -25,11 +25,27 @@ export {
   DEFAULT_AUDIT_MAX_BYTES,
   GatewayConfigSchema,
   loadGatewayConfig,
+  parseBearerTokens,
   resolveConfigPath,
   type CapabilitySpec,
   type GatewayConfig,
+  type ServeConfig,
 } from "./config.js";
-export { createGateway, GATEWAY_VERSION, type Gateway, type GatewayOptions } from "./gateway.js";
+export {
+  createGateway,
+  createGatewayCore,
+  createGatewaySession,
+  GATEWAY_VERSION,
+  type CallIdentity,
+  type Gateway,
+  type GatewayCore,
+  type GatewayOptions,
+  type GatewaySession,
+} from "./gateway.js";
+export { staticTokenVerifier } from "./http/auth-static.js";
+export { BoundedEventStore } from "./http/event-store.js";
+export { SessionManager } from "./http/sessions.js";
+export { startHttpGateway, type HttpGateway, type HttpGatewayOptions } from "./http/server.js";
 export { defaultGatewayHome, resolveGatewayHome } from "./home.js";
 export { evaluatePolicy, type PolicyDecision, type PolicyInput } from "./policy.js";
 export {
