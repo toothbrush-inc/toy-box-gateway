@@ -16,6 +16,7 @@ import {
 } from "node:http";
 
 import {
+  CAPABILITY_PROVIDER,
   connectionId,
   openVault,
   parseCapabilityManifest,
@@ -27,13 +28,14 @@ import {
   type Vault,
 } from "@local/vault";
 
-import type { AuditWriter } from "./audit.js";
+import type { AuditEntry, AuditWriter } from "./audit.js";
 import type { CapabilitySpec } from "./config.js";
 import { redactErrorMessage } from "./redact.js";
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
+const MAX_INFLIGHT_PEER_CALLS = 8;
 
 export interface EgressProviderSpec {
   provider: string;
@@ -49,6 +51,8 @@ export interface CapabilityEgressInfo {
   data?: ManifestData;
   /** Declared profile fields (the actions of the profile:default connection). */
   profileFields: string[];
+  /** Declared peer calls: producer capability id -> tools this capability may invoke. */
+  peerCalls: Map<string, string[]>;
 }
 
 export function newEgressToken(): string {
@@ -62,7 +66,12 @@ export function loadEgressSpecs(
 ): Map<string, CapabilityEgressInfo> {
   const out = new Map<string, CapabilityEgressInfo>();
   for (const spec of specs) {
-    const info: CapabilityEgressInfo = { egress: [], connections: [], profileFields: [] };
+    const info: CapabilityEgressInfo = {
+      egress: [],
+      connections: [],
+      profileFields: [],
+      peerCalls: new Map(),
+    };
     out.set(spec.id, info);
     if (spec.manifestPath === undefined) {
       continue;
@@ -81,6 +90,15 @@ export function loadEgressSpecs(
           if (need.egress !== undefined) {
             log(
               `[gateway] ${spec.id}: ignoring egress spec on the profile connection (profile is never proxied)`,
+            );
+          }
+          continue;
+        }
+        if (need.provider === CAPABILITY_PROVIDER) {
+          info.peerCalls.set(need.slot, [...(need.actions ?? [])]);
+          if (need.egress !== undefined) {
+            log(
+              `[gateway] ${spec.id}: ignoring egress spec on the capability:${need.slot} connection (peer calls are never proxied)`,
             );
           }
           continue;
@@ -151,6 +169,13 @@ function parseEnvFile(text: string): Record<string, string> {
   return out;
 }
 
+/** Structural view of an MCP CallToolResult, kept SDK-free on this side. */
+export interface PeerToolResult {
+  content?: unknown;
+  structuredContent?: unknown;
+  isError?: boolean | undefined;
+}
+
 export interface EgressServerOptions {
   tokens: Map<string, string>;
   specs: Map<string, CapabilityEgressInfo>;
@@ -161,6 +186,15 @@ export interface EgressServerOptions {
   commonsDir?: string;
   googleTokenUrl?: string;
   fetchImpl?: typeof fetch;
+  /** Capability package.json version read at mount; null when unknown. */
+  versionOf?: (capabilityId: string) => string | null;
+  /** Routes a granted peer call to the mounted producer. Throws coded errors
+   * (call_not_mounted, denied_by_policy, call_failed). */
+  callPeer?: (
+    producer: string,
+    tool: string,
+    args: Record<string, unknown>,
+  ) => Promise<PeerToolResult>;
 }
 
 interface Denial {
@@ -180,6 +214,7 @@ export class EgressServer {
   private readonly fetchImpl: typeof fetch;
   private readonly googleTokenUrl: string;
   private readonly tokenCache = new Map<string, CachedToken>();
+  private readonly inflightCalls = new Map<string, number>();
   private urlValue: string | null = null;
 
   constructor(private readonly options: EgressServerOptions) {
@@ -211,7 +246,7 @@ export class EgressServer {
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const route = `${request.method ?? ""} ${request.url ?? ""}`;
-    const known = ["POST /fetch", "POST /token", "POST /profile", "POST /commons"];
+    const known = ["POST /fetch", "POST /token", "POST /profile", "POST /commons", "POST /call"];
     if (!known.includes(route)) {
       reply(response, 404, { ok: false, error: { code: "egress_not_found", message: "unknown endpoint" } });
       return;
@@ -240,9 +275,19 @@ export class EgressServer {
       await this.handleToken(capability, body, response);
     } else if (route === "POST /profile") {
       await this.handleProfile(capability, body, response);
+    } else if (route === "POST /call") {
+      await this.handleCall(capability, body, response);
     } else {
       this.handleCommons(capability, body, response);
     }
+  }
+
+  /** Injects capability_version (when known) into every audit row. */
+  private record(entry: AuditEntry): void {
+    const version = this.options.versionOf?.(entry.capability) ?? null;
+    this.options.audit.record(
+      version === null ? entry : { ...entry, capability_version: version },
+    );
   }
 
   private authenticate(request: IncomingMessage): string | null {
@@ -268,7 +313,7 @@ export class EgressServer {
     const provider = typeof body["provider"] === "string" ? body["provider"] : "";
     const requestedHost = hostnameOf(typeof body["url"] === "string" ? body["url"] : "");
     const audit = (outcome: "ok" | "denied" | "error", extras: { denied?: true; error_code?: string } = {}): void => {
-      this.options.audit.record({
+      this.record({
         ts: new Date().toISOString(),
         capability,
         tool: `egress:${provider === "" ? "unknown" : provider}`,
@@ -401,7 +446,7 @@ export class EgressServer {
     const provider = typeof body["provider"] === "string" ? body["provider"] : "";
     const slot = typeof body["slot"] === "string" && body["slot"] !== "" ? body["slot"] : "default";
     const audit = (outcome: "ok" | "denied" | "error", errorCode?: string): void => {
-      this.options.audit.record({
+      this.record({
         ts: new Date().toISOString(),
         capability,
         tool: `token:${provider === "" ? "unknown" : provider}`,
@@ -541,7 +586,7 @@ export class EgressServer {
       ? rawFields.filter((field): field is string => typeof field === "string")
       : [];
     const audit = (outcome: "ok" | "denied" | "error", errorCode?: string): void => {
-      this.options.audit.record({
+      this.record({
         ts: new Date().toISOString(),
         capability,
         tool: "profile:read",
@@ -616,6 +661,126 @@ export class EgressServer {
     reply(response, 200, { ok: true, fields });
   }
 
+  private async handleCall(
+    capability: string,
+    body: Record<string, unknown>,
+    response: ServerResponse,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const producer = typeof body["capability"] === "string" ? body["capability"] : "";
+    const tool = typeof body["tool"] === "string" ? body["tool"] : "";
+    const audit = (outcome: "ok" | "denied" | "error", errorCode?: string): void => {
+      const producerVersion = producer === "" ? null : this.options.versionOf?.(producer) ?? null;
+      this.record({
+        ts: new Date().toISOString(),
+        capability,
+        tool: `call:${producer === "" ? "unknown" : producer}__${tool === "" ? "unknown" : tool}`,
+        outcome,
+        duration_ms: Date.now() - startedAt,
+        ...(outcome === "denied" ? { denied_by: "egress" as const } : {}),
+        ...(errorCode === undefined ? {} : { error_code: errorCode }),
+        ...(producer === "" ? {} : { target: producer }),
+        ...(producerVersion === null ? {} : { target_version: producerVersion }),
+      });
+    };
+    const deny = (status: number, code: string, message: string): void => {
+      audit(status >= 500 ? "error" : "denied", code);
+      reply(response, status, { ok: false, error: { code, message } });
+    };
+
+    const rawArgs = body["args"];
+    const args =
+      typeof rawArgs === "object" && rawArgs !== null && !Array.isArray(rawArgs)
+        ? (rawArgs as Record<string, unknown>)
+        : {};
+    if (
+      producer === "" ||
+      !/^[a-z][a-z0-9_-]*$/u.test(producer) ||
+      tool === "" ||
+      !/^[a-z][a-z0-9_]*$/u.test(tool)
+    ) {
+      deny(400, "egress_bad_request", "capability and tool are required tokens");
+      return;
+    }
+    if (producer === capability) {
+      deny(403, "egress_denied", `capability '${capability}' cannot call itself through the broker`);
+      return;
+    }
+    const declaredTools = this.options.specs.get(capability)?.peerCalls.get(producer);
+    if (declaredTools === undefined) {
+      deny(
+        403,
+        "egress_denied",
+        `capability '${capability}' does not declare connection capability:${producer}`,
+      );
+      return;
+    }
+    if (!declaredTools.includes(tool)) {
+      deny(
+        403,
+        "egress_denied",
+        `capability '${capability}' does not declare tool '${tool}' on capability:${producer}`,
+      );
+      return;
+    }
+    const connection = connectionId(CAPABILITY_PROVIDER, producer);
+    if (!this.vault.checkGrant({ capability, connectionId: connection, action: tool })) {
+      deny(
+        403,
+        "grant_missing",
+        `capability '${capability}' has no grant for ${connection} (tool ${tool}); grant it and retry`,
+      );
+      return;
+    }
+    if (this.options.callPeer === undefined) {
+      deny(503, "call_not_configured", "the broker has no peer-call route configured");
+      return;
+    }
+    const inflight = this.inflightCalls.get(capability) ?? 0;
+    if (inflight >= MAX_INFLIGHT_PEER_CALLS) {
+      deny(429, "call_busy", `capability '${capability}' has too many peer calls in flight`);
+      return;
+    }
+    this.inflightCalls.set(capability, inflight + 1);
+    let result: PeerToolResult;
+    try {
+      result = await this.options.callPeer(producer, tool, args);
+    } catch (error) {
+      const rawCode = (error as { code?: unknown }).code;
+      const code = typeof rawCode === "string" ? rawCode : "call_failed";
+      const status = code === "call_not_mounted" ? 503 : code === "denied_by_policy" ? 403 : 502;
+      deny(
+        status,
+        code === "denied_by_policy" ? "egress_denied" : code,
+        redactErrorMessage(error instanceof Error ? error.message : String(error)),
+      );
+      return;
+    } finally {
+      const current = this.inflightCalls.get(capability) ?? 1;
+      if (current <= 1) {
+        this.inflightCalls.delete(capability);
+      } else {
+        this.inflightCalls.set(capability, current - 1);
+      }
+    }
+    const payload = extractToolPayload(result);
+    if (result.isError === true) {
+      const envelopeCode = (payload as { error?: { code?: unknown } } | null)?.error?.code;
+      audit("error", typeof envelopeCode === "string" ? envelopeCode : "peer_error");
+    } else {
+      audit("ok");
+    }
+    reply(response, 200, {
+      ok: true,
+      result: payload,
+      provenance: {
+        capability: producer,
+        version: this.options.versionOf?.(producer) ?? null,
+        ts: new Date().toISOString(),
+      },
+    });
+  }
+
   private handleCommons(
     capability: string,
     body: Record<string, unknown>,
@@ -625,7 +790,7 @@ export class EgressServer {
     const dataset = typeof body["dataset"] === "string" ? body["dataset"] : "";
     const key = typeof body["key"] === "string" ? body["key"] : undefined;
     const audit = (outcome: "ok" | "denied" | "error", errorCode?: string): void => {
-      this.options.audit.record({
+      this.record({
         ts: new Date().toISOString(),
         capability,
         tool: `commons:${dataset === "" ? "unknown" : dataset}`,
@@ -696,6 +861,24 @@ export class EgressServer {
 
 function sha256(value: string): Buffer {
   return createHash("sha256").update(value).digest();
+}
+
+/** Producer tool result -> transportable payload: structuredContent, else the
+ * first text block (parsed as JSON when possible). */
+function extractToolPayload(result: PeerToolResult): unknown {
+  if (result.structuredContent !== undefined) {
+    return result.structuredContent;
+  }
+  const content = Array.isArray(result.content) ? result.content : [];
+  const first = content[0] as { type?: unknown; text?: unknown } | undefined;
+  if (first?.type === "text" && typeof first.text === "string") {
+    try {
+      return JSON.parse(first.text);
+    } catch {
+      return first.text;
+    }
+  }
+  return null;
 }
 
 function reply(response: ServerResponse, status: number, payload: unknown): void {

@@ -125,6 +125,25 @@ export function parseBearerTokens(raw: string | undefined): Map<string, string> 
   return tokens;
 }
 
+/**
+ * Best-effort read of the capability's package.json version at its cwd, for
+ * provenance in status and audit. Self-reported locally; hosted deploys bind
+ * capability@version to an image digest for real attestation.
+ */
+export function readCapabilityVersion(spec: CapabilitySpec): string | null {
+  if (spec.cwd === undefined) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(resolve(spec.cwd, "package.json"), "utf8")) as {
+      version?: unknown;
+    };
+    return typeof parsed.version === "string" && parsed.version !== "" ? parsed.version : null;
+  } catch {
+    return null;
+  }
+}
+
 export type CapabilitySpec = z.infer<typeof CapabilitySpecSchema>;
 export type GatewayConfig = z.infer<typeof GatewayConfigSchema> & { configPath: string };
 

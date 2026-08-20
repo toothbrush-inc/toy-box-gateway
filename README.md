@@ -159,6 +159,15 @@ endpoint via `VAULT_EGRESS_URL` + a per-capability `VAULT_EGRESS_TOKEN`:
   capability a short-lived access token, cached until just before expiry. A
   child never sees the refresh token; a leaked access token dies within the
   hour. `invalid_grant` maps to an actionable `token_revoked`.
+- **`POST /call`** — grant-gated peer capability calls: a consumer capability
+  that declares `{provider: "capability", slot: "<producer>", actions:
+  [tools...]}` may invoke those producer tools through the broker. The broker
+  checks the declaration and the per-tool grant on every call (revocation is
+  immediate), enforces the producer's tool policy, routes to the mounted
+  child, and stamps **provenance** (`{capability, version, ts}` — the
+  producer's package.json version read at mount) into the response. Audit rows
+  are `call:<producer>__<tool>` with both sides' versions — never args or
+  results. Self-calls are denied and concurrent calls per consumer are capped.
 - **`secretsAccess: "broker"`** per capability spawns the child with
   `VAULT_SECRETS_ACCESS=broker`, making fetch-path vault reads throw so a
   code path that bypasses the broker fails loudly. Masked status reads keep

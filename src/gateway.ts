@@ -29,7 +29,7 @@ import {
 
 import { AuditWriter, type AuditEntry } from "./audit.js";
 import { ChildManager, type ChildEgress, type TransportFactory } from "./children.js";
-import type { CapabilitySpec, GatewayConfig } from "./config.js";
+import { readCapabilityVersion, type CapabilitySpec, type GatewayConfig } from "./config.js";
 import {
   EgressServer,
   loadEgressSpecs,
@@ -43,7 +43,7 @@ import { parsePrefixedName, ToolRegistry } from "./registry.js";
 import { redactErrorMessage } from "./redact.js";
 import { buildGatewayStatus } from "./status.js";
 
-export const GATEWAY_VERSION = "0.5.0";
+export const GATEWAY_VERSION = "0.6.0";
 
 type CallExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -187,6 +187,10 @@ function jsonResult(payload: Record<string, unknown>): CallToolResult {
   };
 }
 
+function codedError(message: string, code: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
 function errorResult(code: string, message: string): CallToolResult {
   const payload = { ok: false, error: { code, message } };
   return {
@@ -240,6 +244,15 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
   const sessions = new Set<GatewaySession>();
 
   const egressSpecs = loadEgressSpecs(config.capabilities, log);
+  // Provenance: each capability's self-reported package.json version, read
+  // once here and stamped into status and audit rows.
+  const versionByCapability = new Map<string, string>();
+  for (const capability of config.capabilities) {
+    const capabilityVersion = readCapabilityVersion(capability);
+    if (capabilityVersion !== null) {
+      versionByCapability.set(capability.id, capabilityVersion);
+    }
+  }
   const tokenByCapability = new Map<string, string>(
     config.capabilities.map((capability) => [capability.id, newEgressToken()]),
   );
@@ -258,6 +271,27 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
     log,
     ...(oauth === undefined ? {} : { oauth }),
     ...(config.commons === undefined ? {} : { commonsDir: config.commons.dir }),
+    versionOf: (capabilityId) => versionByCapability.get(capabilityId) ?? null,
+    callPeer: async (producer, tool, args) => {
+      const producerSpec = specs.get(producer);
+      const mounted = children.get(producer);
+      if (
+        producerSpec === undefined ||
+        mounted === undefined ||
+        mounted.state !== "connected" ||
+        mounted.client === null
+      ) {
+        throw codedError(`capability '${producer}' is not mounted or not connected`, "call_not_mounted");
+      }
+      const decision = evaluatePolicy(producerSpec, tool);
+      if (!decision.allowed) {
+        throw codedError(decision.message, "denied_by_policy");
+      }
+      return (await mounted.client.callTool(
+        { name: tool, arguments: args },
+        CallToolResultSchema,
+      )) as CallToolResult;
+    },
   });
   const egressUrl = await egressServer.listen();
 
@@ -343,10 +377,12 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
       const name = request.params.name;
 
       const record = (entry: Omit<AuditEntry, "ts" | "duration_ms">): void => {
+        const version = versionByCapability.get(entry.capability);
         audit.record({
           ts: new Date().toISOString(),
           duration_ms: Date.now() - startedAt,
           ...identityFields(identity),
+          ...(version === undefined ? {} : { capability_version: version }),
           ...entry,
         });
       };
@@ -397,12 +433,28 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
               }
               profile = { fields: info.profileFields, granted };
             }
+            const peers = [...(info?.peerCalls ?? new Map<string, string[]>())].map(
+              ([producerId, tools]) => {
+                let granted = false;
+                try {
+                  granted = openVault({ env, grantMode: "explicit" }).checkGrant({
+                    capability: capabilityId,
+                    connectionId: `capability:${producerId}`,
+                  });
+                } catch {
+                  granted = false;
+                }
+                return { capability: producerId, tools, granted };
+              },
+            );
             return {
               profile,
               commons: (info?.data?.commons ?? []).map((entry) => entry.dataset),
+              peers,
             };
           },
           config.commons?.dir,
+          (capabilityId) => versionByCapability.get(capabilityId) ?? null,
         );
         record({ capability: "gateway", tool: name, outcome: "ok" });
         return jsonResult(status);

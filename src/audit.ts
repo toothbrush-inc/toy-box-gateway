@@ -34,6 +34,11 @@ export interface AuditEntry {
   user?: string;
   /** Profile field names or commons keys — NAMES only, never values. */
   fields?: string[];
+  /** `capability`'s package.json version as read at mount (self-reported). */
+  capability_version?: string;
+  /** Peer-call rows (tool `call:<producer>__<tool>`): the producer and its version. */
+  target?: string;
+  target_version?: string;
 }
 
 export interface AuditWriterOptions {

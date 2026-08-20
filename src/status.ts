@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  CAPABILITY_PROVIDER,
   connectionId,
   openVault,
   parseCapabilityManifest,
@@ -33,14 +34,23 @@ export interface CapabilityProfileStatus {
   granted: string[];
 }
 
+export interface CapabilityPeerStatus {
+  capability: string;
+  tools: string[];
+  granted: boolean;
+}
+
 export interface CapabilityDataStatus {
   profile: CapabilityProfileStatus | null;
   commons: string[];
+  peers: CapabilityPeerStatus[];
 }
 
 export interface CapabilityStatus {
   id: string;
   state: ChildState;
+  /** package.json version read at mount; self-reported, null when unknown. */
+  version: string | null;
   tools: number;
   tools_denied_by_policy: string[];
   last_error: string | null;
@@ -50,6 +60,7 @@ export interface CapabilityStatus {
   egress: CapabilityEgressStatus;
   profile: CapabilityProfileStatus | null;
   commons: string[];
+  peers: CapabilityPeerStatus[];
 }
 
 /** Warn-only: manifest problems never block mounting (per CAPABILITY.md). */
@@ -84,6 +95,18 @@ export function checkManifest(
       }
       if (need.egress !== undefined) {
         warnings.push("profile connection must not declare an egress spec; it is ignored");
+      }
+    }
+    if (need.provider === CAPABILITY_PROVIDER) {
+      if (need.actions === undefined || need.actions.length === 0) {
+        warnings.push(
+          `capability:${need.slot} connection declares no tools (actions); all peer calls will be denied`,
+        );
+      }
+      if (need.egress !== undefined) {
+        warnings.push(
+          `capability:${need.slot} connection must not declare an egress spec; it is ignored`,
+        );
       }
     }
   }
@@ -140,8 +163,10 @@ export function buildGatewayStatus(
   dataInfo: (capabilityId: string) => CapabilityDataStatus = () => ({
     profile: null,
     commons: [],
+    peers: [],
   }),
   commonsDir?: string,
+  versionOf: (capabilityId: string) => string | null = () => null,
 ): { ok: true; data: { capabilities: CapabilityStatus[] } } {
   const capabilities: CapabilityStatus[] = mounted.map((child) => {
     const spec = specs.get(child.id);
@@ -150,6 +175,7 @@ export function buildGatewayStatus(
     return {
       id: child.id,
       state: child.state,
+      version: versionOf(child.id),
       // Tools exposed through the gateway (the child's list minus policy denials).
       tools: Math.max(child.tools.length - denied.length, 0),
       tools_denied_by_policy: denied,
@@ -163,6 +189,7 @@ export function buildGatewayStatus(
       egress: egressInfo(child.id),
       profile: data.profile,
       commons: data.commons,
+      peers: data.peers,
     };
   });
   return { ok: true, data: { capabilities } };

@@ -53,12 +53,14 @@ const WEATHER_INFO: CapabilityEgressInfo = {
     { provider: "open_meteo", slot: "default", optional: true },
   ],
   profileFields: [],
+  peerCalls: new Map(),
 };
 
 const CALSYNC_INFO: CapabilityEgressInfo = {
   egress: [],
   connections: [{ provider: "google", slot: "personal", optional: false }],
   profileFields: [],
+  peerCalls: new Map(),
 };
 
 const FITNESS_INFO: CapabilityEgressInfo = {
@@ -68,6 +70,16 @@ const FITNESS_INFO: CapabilityEgressInfo = {
   ],
   profileFields: ["units", "timezone"],
   data: { commons: [{ dataset: "exercise-catalog" }] },
+  peerCalls: new Map(),
+};
+
+const COACH_INFO: CapabilityEgressInfo = {
+  egress: [],
+  connections: [
+    { provider: "capability", slot: "fitness", optional: true, actions: ["get_workout_stats"] },
+  ],
+  profileFields: [],
+  peerCalls: new Map([["fitness", ["get_workout_stats"]]]),
 };
 
 interface Harness {
@@ -85,6 +97,12 @@ async function startBroker(
     oauth?: { google: { clientId: string; clientSecret: string } };
     upstream?: (url: string, init?: RequestInit) => Response | Promise<Response>;
     commonsDir?: string;
+    callPeer?: (
+      producer: string,
+      tool: string,
+      args: Record<string, unknown>,
+    ) => Promise<{ content?: unknown; structuredContent?: unknown; isError?: boolean }>;
+    versionOf?: (capabilityId: string) => string | null;
   } = {},
 ): Promise<Harness> {
   const dir = tempDir();
@@ -101,17 +119,21 @@ async function startBroker(
       ["tok-weather", "weather"],
       ["tok-calsync", "calsync"],
       ["tok-fitness", "fitness"],
+      ["tok-coach", "coach"],
     ]),
     specs: new Map([
       ["weather", WEATHER_INFO],
       ["calsync", CALSYNC_INFO],
       ["fitness", FITNESS_INFO],
+      ["coach", COACH_INFO],
     ]),
     env,
     audit,
     log: () => undefined,
     ...(options.oauth === undefined ? {} : { oauth: options.oauth }),
     ...(options.commonsDir === undefined ? {} : { commonsDir: options.commonsDir }),
+    ...(options.callPeer === undefined ? {} : { callPeer: options.callPeer }),
+    ...(options.versionOf === undefined ? {} : { versionOf: options.versionOf }),
     fetchImpl: upstream as unknown as typeof fetch,
   });
   servers.push(server);
@@ -121,7 +143,7 @@ async function startBroker(
 
 async function call(
   harness: Harness,
-  path: "/fetch" | "/token" | "/profile" | "/commons",
+  path: "/fetch" | "/token" | "/profile" | "/commons" | "/call",
   token: string | null,
   body: unknown,
 ): Promise<{ status: number; json: Record<string, unknown> }> {
@@ -515,6 +537,131 @@ describe("EgressServer /token", () => {
   });
 });
 
+describe("EgressServer /call", () => {
+  const FITNESS_RESULT = {
+    content: [
+      { type: "text", text: JSON.stringify({ ok: true, data: { total_workouts: 3 } }) },
+    ],
+    structuredContent: { ok: true, data: { total_workouts: 3 } },
+  };
+
+  function grantCoach(harness: Harness): void {
+    harness.seedVault.putGrant({
+      capability: "coach",
+      connectionId: "capability:fitness",
+      actions: ["get_workout_stats"],
+    });
+  }
+
+  it("routes granted peer calls with provenance and versioned audit rows", async () => {
+    const callPeer = vi.fn(async () => FITNESS_RESULT);
+    const harness = await startBroker({
+      callPeer,
+      versionOf: (id) => (id === "fitness" ? "0.2.0" : id === "coach" ? "0.1.0" : null),
+    });
+    grantCoach(harness);
+    const okCall = await call(harness, "/call", "tok-coach", {
+      capability: "fitness",
+      tool: "get_workout_stats",
+      args: { days: 7 },
+    });
+    expect(okCall.status).toBe(200);
+    expect(okCall.json["result"]).toEqual({ ok: true, data: { total_workouts: 3 } });
+    expect(okCall.json["provenance"]).toMatchObject({ capability: "fitness", version: "0.2.0" });
+    expect(callPeer).toHaveBeenCalledWith("fitness", "get_workout_stats", { days: 7 });
+    expect(lastAudit(harness)).toMatchObject({
+      capability: "coach",
+      capability_version: "0.1.0",
+      tool: "call:fitness__get_workout_stats",
+      outcome: "ok",
+      target: "fitness",
+      target_version: "0.2.0",
+    });
+    const auditText = readFileSync(harness.auditPath, "utf8");
+    expect(auditText).not.toContain("total_workouts");
+    expect(auditText).not.toContain('"days"');
+  });
+
+  it("denies undeclared peers and tools, missing grants, self-calls, unmounted producers", async () => {
+    const harness = await startBroker({
+      callPeer: async () => {
+        throw Object.assign(new Error("producer offline"), { code: "call_not_mounted" });
+      },
+    });
+    const undeclared = await call(harness, "/call", "tok-weather", {
+      capability: "fitness",
+      tool: "get_workout_stats",
+    });
+    expect(undeclared.status).toBe(403);
+    expect(errorCode(undeclared.json)).toBe("egress_denied");
+
+    const badTool = await call(harness, "/call", "tok-coach", {
+      capability: "fitness",
+      tool: "log_workout",
+    });
+    expect(badTool.status).toBe(403);
+    expect(errorCode(badTool.json)).toBe("egress_denied");
+
+    const ungranted = await call(harness, "/call", "tok-coach", {
+      capability: "fitness",
+      tool: "get_workout_stats",
+    });
+    expect(ungranted.status).toBe(403);
+    expect(errorCode(ungranted.json)).toBe("grant_missing");
+    expect(lastAudit(harness)).toMatchObject({
+      capability: "coach",
+      outcome: "denied",
+      denied_by: "egress",
+      error_code: "grant_missing",
+      target: "fitness",
+    });
+
+    const self = await call(harness, "/call", "tok-fitness", {
+      capability: "fitness",
+      tool: "get_workout_stats",
+    });
+    expect(self.status).toBe(403);
+    expect(errorCode(self.json)).toBe("egress_denied");
+
+    grantCoach(harness);
+    const unmounted = await call(harness, "/call", "tok-coach", {
+      capability: "fitness",
+      tool: "get_workout_stats",
+    });
+    expect(unmounted.status).toBe(503);
+    expect(errorCode(unmounted.json)).toBe("call_not_mounted");
+  });
+
+  it("passes producer typed errors through as 200 and honors mid-session revocation", async () => {
+    const producerError = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ ok: false, error: { code: "unknown_exercise", message: "nope" } }),
+        },
+      ],
+      isError: true,
+    };
+    const harness = await startBroker({ callPeer: async () => producerError });
+    grantCoach(harness);
+    const errCall = await call(harness, "/call", "tok-coach", {
+      capability: "fitness",
+      tool: "get_workout_stats",
+    });
+    expect(errCall.status).toBe(200);
+    expect((errCall.json["result"] as { ok: boolean }).ok).toBe(false);
+    expect(lastAudit(harness)).toMatchObject({ outcome: "error", error_code: "unknown_exercise" });
+
+    harness.seedVault.revokeGrant("coach", "capability:fitness");
+    const revoked = await call(harness, "/call", "tok-coach", {
+      capability: "fitness",
+      tool: "get_workout_stats",
+    });
+    expect(revoked.status).toBe(403);
+    expect(errorCode(revoked.json)).toBe("grant_missing");
+  });
+});
+
 describe("egress helpers", () => {
   it("loads egress specs from a real manifest file, warn-only on failure", () => {
     const dir = tempDir();
@@ -530,6 +677,7 @@ describe("egress helpers", () => {
             optional: true,
             egress: { hosts: ["api.purpleair.com"], attach: { kind: "header", name: "X-API-Key" } },
           },
+          { provider: "capability", slot: "fitness", optional: true, actions: ["get_workout_stats"] },
         ],
       }),
     );
@@ -542,7 +690,14 @@ describe("egress helpers", () => {
       (line) => warnings.push(line),
     );
     expect(specs.get("weather")?.egress[0]).toMatchObject({ provider: "purpleair", hosts: ["api.purpleair.com"] });
-    expect(specs.get("broken")).toEqual({ egress: [], connections: [], profileFields: [] });
+    expect(specs.get("weather")?.peerCalls.get("fitness")).toEqual(["get_workout_stats"]);
+    expect(specs.get("weather")?.egress.some((entry) => entry.provider === "capability")).toBe(false);
+    expect(specs.get("broken")).toEqual({
+      egress: [],
+      connections: [],
+      profileFields: [],
+      peerCalls: new Map(),
+    });
     expect(warnings.some((line) => line.includes("broken"))).toBe(true);
   });
 
