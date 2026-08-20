@@ -112,9 +112,11 @@ describe("gateway", () => {
         "weather__wait",
         "gateway_status",
         "gateway_reconnect",
+        "gateway_get_profile",
+        "gateway_set_profile",
       ]),
     );
-    expect(names).toHaveLength(6);
+    expect(names).toHaveLength(8);
     const echo = listed.tools.find((tool) => tool.name === "weather__echo");
     expect(echo?.description).toBe("Echoes input");
     expect(echo?.inputSchema).toMatchObject({

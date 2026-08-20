@@ -16,6 +16,16 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 
+import {
+  openVault,
+  ProfileBoundsError,
+  PROFILE_CONNECTION_ID,
+  PROFILE_MAX_FIELDS,
+  PROFILE_MAX_FILE_BYTES,
+  PROFILE_MAX_VALUE_LENGTH,
+  VaultError,
+} from "@local/vault";
+
 import { AuditWriter, type AuditEntry } from "./audit.js";
 import { ChildManager, type ChildEgress, type TransportFactory } from "./children.js";
 import type { CapabilitySpec, GatewayConfig } from "./config.js";
@@ -32,7 +42,7 @@ import { parsePrefixedName, ToolRegistry } from "./registry.js";
 import { redactErrorMessage } from "./redact.js";
 import { buildGatewayStatus } from "./status.js";
 
-export const GATEWAY_VERSION = "0.3.0";
+export const GATEWAY_VERSION = "0.4.0";
 
 type CallExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -53,6 +63,36 @@ const GATEWAY_RECONNECT_TOOL: Tool = {
       capability: { type: "string", description: "Capability id from gateway_status" },
     },
     required: ["capability"],
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+};
+
+const GATEWAY_GET_PROFILE_TOOL: Tool = {
+  name: "gateway_get_profile",
+  description:
+    "The user's profile: small shared facts (units, timezone, ...) capabilities read per-field with grants. Owner view — full, plain values.",
+  inputSchema: { type: "object", properties: {} },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+};
+
+const GATEWAY_SET_PROFILE_TOOL: Tool = {
+  name: "gateway_set_profile",
+  description:
+    "Set or delete profile fields (merge semantics). Field names are lowercase tokens; values are short strings. Canonical fields: units (imperial|metric), timezone (IANA), home_lat, home_lon, birthday, locale.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      fields: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: "Fields to set or update",
+      },
+      delete: {
+        type: "array",
+        items: { type: "string" },
+        description: "Field names to remove",
+      },
+    },
   },
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
 };
@@ -186,6 +226,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
     audit,
     log,
     ...(oauth === undefined ? {} : { oauth }),
+    ...(config.commons === undefined ? {} : { commonsDir: config.commons.dir }),
   });
   const egressUrl = await egressServer.listen();
 
@@ -224,7 +265,13 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
     audit,
     egress: egressServer,
     egressTokenFor: (capabilityId) => tokenByCapability.get(capabilityId),
-    listTools: () => [...registry.listTools(), GATEWAY_STATUS_TOOL, GATEWAY_RECONNECT_TOOL],
+    listTools: () => [
+      ...registry.listTools(),
+      GATEWAY_STATUS_TOOL,
+      GATEWAY_RECONNECT_TOOL,
+      GATEWAY_GET_PROFILE_TOOL,
+      GATEWAY_SET_PROFILE_TOOL,
+    ],
     attachSession: (session) => sessions.add(session),
     detachSession: (session) => sessions.delete(session),
     async close(): Promise<void> {
@@ -272,9 +319,92 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
               hosts: [...new Set(entries.flatMap((entry) => entry.hosts))],
             };
           },
+          (capabilityId) => {
+            const info = egressSpecs.get(capabilityId);
+            const declaresProfile =
+              info?.connections.some(
+                (need) => `${need.provider}:${need.slot}` === PROFILE_CONNECTION_ID,
+              ) ?? false;
+            let profile: { fields: string[]; granted: string[] } | null = null;
+            if (info !== undefined && declaresProfile) {
+              let granted: string[] = [];
+              try {
+                const row = openVault({ env })
+                  .listGrants(capabilityId)
+                  .find((grant) => grant.connectionId === PROFILE_CONNECTION_ID);
+                if (row !== undefined) {
+                  granted = info.profileFields.filter(
+                    (field) => row.actions.length === 0 || row.actions.includes(field),
+                  );
+                }
+              } catch {
+                granted = [];
+              }
+              profile = { fields: info.profileFields, granted };
+            }
+            return {
+              profile,
+              commons: (info?.data?.commons ?? []).map((entry) => entry.dataset),
+            };
+          },
+          config.commons?.dir,
         );
         record({ capability: "gateway", tool: name, outcome: "ok" });
         return jsonResult(status);
+      }
+
+      if (name === GATEWAY_GET_PROFILE_TOOL.name) {
+        const fields = openVault({ env }).getProfile();
+        record({ capability: "gateway", tool: name, outcome: "ok" });
+        return jsonResult({
+          ok: true,
+          data: {
+            fields,
+            count: Object.keys(fields).length,
+            limits: {
+              max_fields: PROFILE_MAX_FIELDS,
+              max_value_length: PROFILE_MAX_VALUE_LENGTH,
+              max_file_bytes: PROFILE_MAX_FILE_BYTES,
+            },
+          },
+        });
+      }
+
+      if (name === GATEWAY_SET_PROFILE_TOOL.name) {
+        const args = request.params.arguments ?? {};
+        const toSet = args["fields"];
+        const toDelete = args["delete"];
+        const setEntries =
+          typeof toSet === "object" && toSet !== null && !Array.isArray(toSet)
+            ? Object.entries(toSet).filter(
+                (entry): entry is [string, string] => typeof entry[1] === "string",
+              )
+            : [];
+        const deleteNames = Array.isArray(toDelete)
+          ? toDelete.filter((field): field is string => typeof field === "string")
+          : [];
+        if (setEntries.length === 0 && deleteNames.length === 0) {
+          record({ capability: "gateway", tool: name, outcome: "error", error_code: "invalid_profile_field" });
+          return errorResult("invalid_profile_field", "pass fields to set and/or field names to delete");
+        }
+        const touched = [...setEntries.map(([field]) => field), ...deleteNames];
+        try {
+          const vault = openVault({ env });
+          if (setEntries.length > 0) {
+            vault.putProfile(Object.fromEntries(setEntries));
+          }
+          for (const field of deleteNames) {
+            vault.deleteProfileField(field);
+          }
+          record({ capability: "gateway", tool: name, outcome: "ok", fields: touched });
+          return jsonResult({ ok: true, data: { fields: vault.getProfile() } });
+        } catch (error) {
+          const code = error instanceof ProfileBoundsError ? "profile_bounds" : "invalid_profile_field";
+          const message =
+            error instanceof VaultError || error instanceof Error ? error.message : String(error);
+          record({ capability: "gateway", tool: name, outcome: "error", error_code: code, fields: touched });
+          return errorResult(code, message);
+        }
       }
 
       if (name === GATEWAY_RECONNECT_TOOL.name) {

@@ -32,6 +32,8 @@ export interface AuditEntry {
   session_id?: string;
   client_id?: string;
   user?: string;
+  /** Profile field names or commons keys — NAMES only, never values. */
+  fields?: string[];
 }
 
 export interface AuditWriterOptions {

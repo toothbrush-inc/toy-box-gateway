@@ -52,11 +52,22 @@ const WEATHER_INFO: CapabilityEgressInfo = {
     { provider: "purpleair", slot: "default", optional: true },
     { provider: "open_meteo", slot: "default", optional: true },
   ],
+  profileFields: [],
 };
 
 const CALSYNC_INFO: CapabilityEgressInfo = {
   egress: [],
   connections: [{ provider: "google", slot: "personal", optional: false }],
+  profileFields: [],
+};
+
+const FITNESS_INFO: CapabilityEgressInfo = {
+  egress: [],
+  connections: [
+    { provider: "profile", slot: "default", optional: true, actions: ["units", "timezone"] },
+  ],
+  profileFields: ["units", "timezone"],
+  data: { commons: [{ dataset: "exercise-catalog" }] },
 };
 
 interface Harness {
@@ -73,6 +84,7 @@ async function startBroker(
   options: {
     oauth?: { google: { clientId: string; clientSecret: string } };
     upstream?: (url: string, init?: RequestInit) => Response | Promise<Response>;
+    commonsDir?: string;
   } = {},
 ): Promise<Harness> {
   const dir = tempDir();
@@ -88,15 +100,18 @@ async function startBroker(
     tokens: new Map([
       ["tok-weather", "weather"],
       ["tok-calsync", "calsync"],
+      ["tok-fitness", "fitness"],
     ]),
     specs: new Map([
       ["weather", WEATHER_INFO],
       ["calsync", CALSYNC_INFO],
+      ["fitness", FITNESS_INFO],
     ]),
     env,
     audit,
     log: () => undefined,
     ...(options.oauth === undefined ? {} : { oauth: options.oauth }),
+    ...(options.commonsDir === undefined ? {} : { commonsDir: options.commonsDir }),
     fetchImpl: upstream as unknown as typeof fetch,
   });
   servers.push(server);
@@ -106,7 +121,7 @@ async function startBroker(
 
 async function call(
   harness: Harness,
-  path: "/fetch" | "/token",
+  path: "/fetch" | "/token" | "/profile" | "/commons",
   token: string | null,
   body: unknown,
 ): Promise<{ status: number; json: Record<string, unknown> }> {
@@ -283,6 +298,138 @@ describe("EgressServer /fetch", () => {
   });
 });
 
+describe("EgressServer /profile", () => {
+  async function seedProfileGrant(harness: Harness): Promise<void> {
+    harness.seedVault.putProfile({ units: "metric" });
+    harness.seedVault.putGrant({
+      capability: "fitness",
+      connectionId: "profile:default",
+      actions: ["units", "timezone"],
+    });
+    await Promise.resolve();
+  }
+
+  it("serves granted fields, omits unset ones, and audits names only", async () => {
+    const harness = await startBroker();
+    await seedProfileGrant(harness);
+    const result = await call(harness, "/profile", "tok-fitness", {
+      fields: ["units", "timezone"],
+    });
+    expect(result.status).toBe(200);
+    expect(result.json["fields"]).toEqual({ units: "metric" });
+    const entry = lastAudit(harness);
+    expect(entry).toMatchObject({
+      capability: "fitness",
+      tool: "profile:read",
+      outcome: "ok",
+      fields: ["units", "timezone"],
+    });
+    expect(readFileSync(harness.auditPath, "utf8")).not.toContain("metric");
+  });
+
+  it("denies undeclared fields, undeclared capabilities, and missing grants", async () => {
+    const harness = await startBroker();
+    await seedProfileGrant(harness);
+
+    const undeclaredField = await call(harness, "/profile", "tok-fitness", {
+      fields: ["birthday"],
+    });
+    expect(undeclaredField.status).toBe(403);
+    expect(errorCode(undeclaredField.json)).toBe("egress_denied");
+
+    const noProfileConnection = await call(harness, "/profile", "tok-weather", {
+      fields: ["units"],
+    });
+    expect(errorCode(noProfileConnection.json)).toBe("egress_denied");
+
+    harness.seedVault.revokeGrant("fitness", "profile:default");
+    const revoked = await call(harness, "/profile", "tok-fitness", {
+      fields: ["units", "timezone"],
+    });
+    expect(revoked.status).toBe(403);
+    expect(errorCode(revoked.json)).toBe("grant_missing");
+    expect((revoked.json["error"] as { message: string }).message).toContain("units, timezone");
+
+    const badBody = await call(harness, "/profile", "tok-fitness", { fields: [] });
+    expect(badBody.status).toBe(400);
+  });
+
+  it("hard-denies profile through /fetch", async () => {
+    const harness = await startBroker();
+    const result = await call(harness, "/fetch", "tok-fitness", {
+      provider: "profile",
+      url: "https://api.example.com/x",
+    });
+    expect(result.status).toBe(403);
+    expect(errorCode(result.json)).toBe("egress_denied");
+  });
+});
+
+describe("EgressServer /commons", () => {
+  function commonsDir(harness: Harness): string {
+    const dir = join(harness.vaultHome, "..", "commons");
+    return dir;
+  }
+
+  async function startWithCatalog(): Promise<{ harness: Harness; dir: string }> {
+    const harness0 = await startBroker();
+    const dir = commonsDir(harness0);
+    await Promise.resolve();
+    return { harness: harness0, dir };
+  }
+
+  it("serves declared datasets, keys, and audits reads", async () => {
+    const { harness, dir } = await startWithCatalog();
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "exercise-catalog.json"),
+      JSON.stringify({ running: { category: "cardio" }, rowing: { category: "cardio" } }),
+    );
+    const withDir = await startBroker({ commonsDir: dir });
+
+    const all = await call(withDir, "/commons", "tok-fitness", { dataset: "exercise-catalog" });
+    expect(all.status).toBe(200);
+    expect(all.json["data"]).toMatchObject({ running: { category: "cardio" } });
+
+    const keyed = await call(withDir, "/commons", "tok-fitness", {
+      dataset: "exercise-catalog",
+      key: "rowing",
+    });
+    expect(keyed.json["data"]).toEqual({ category: "cardio" });
+    expect(lastAudit(withDir)).toMatchObject({ tool: "commons:exercise-catalog", outcome: "ok" });
+
+    const missingKey = await call(withDir, "/commons", "tok-fitness", {
+      dataset: "exercise-catalog",
+      key: "nope",
+    });
+    expect(errorCode(missingKey.json)).toBe("commons_key_not_found");
+
+    const undeclared = await call(withDir, "/commons", "tok-weather", {
+      dataset: "exercise-catalog",
+    });
+    expect(errorCode(undeclared.json)).toBe("egress_denied");
+
+    void harness;
+  });
+
+  it("reports unconfigured and missing datasets distinctly", async () => {
+    const noDir = await startBroker();
+    const unconfigured = await call(noDir, "/commons", "tok-fitness", {
+      dataset: "exercise-catalog",
+    });
+    expect(unconfigured.status).toBe(503);
+    expect(errorCode(unconfigured.json)).toBe("commons_not_configured");
+
+    const emptyDir = await startBroker({ commonsDir: commonsDir(noDir) });
+    const missing = await call(emptyDir, "/commons", "tok-fitness", {
+      dataset: "exercise-catalog",
+    });
+    expect(missing.status).toBe(404);
+    expect(errorCode(missing.json)).toBe("commons_not_found");
+  });
+});
+
 describe("EgressServer /token", () => {
   async function seedGoogle(harness: Harness): Promise<void> {
     await harness.seedVault.putSecret({
@@ -395,7 +542,7 @@ describe("egress helpers", () => {
       (line) => warnings.push(line),
     );
     expect(specs.get("weather")?.egress[0]).toMatchObject({ provider: "purpleair", hosts: ["api.purpleair.com"] });
-    expect(specs.get("broken")).toEqual({ egress: [], connections: [] });
+    expect(specs.get("broken")).toEqual({ egress: [], connections: [], profileFields: [] });
     expect(warnings.some((line) => line.includes("broken"))).toBe(true);
   });
 

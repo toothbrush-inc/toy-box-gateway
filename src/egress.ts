@@ -7,6 +7,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   createServer,
   type IncomingMessage,
@@ -18,7 +19,11 @@ import {
   connectionId,
   openVault,
   parseCapabilityManifest,
+  PROFILE_CONNECTION_ID,
+  PROFILE_MAX_FIELDS,
+  PROFILE_PROVIDER,
   type ManifestConnectionNeed,
+  type ManifestData,
   type Vault,
 } from "@local/vault";
 
@@ -41,6 +46,9 @@ export interface EgressProviderSpec {
 export interface CapabilityEgressInfo {
   egress: EgressProviderSpec[];
   connections: ManifestConnectionNeed[];
+  data?: ManifestData;
+  /** Declared profile fields (the actions of the profile:default connection). */
+  profileFields: string[];
 }
 
 export function newEgressToken(): string {
@@ -54,7 +62,7 @@ export function loadEgressSpecs(
 ): Map<string, CapabilityEgressInfo> {
   const out = new Map<string, CapabilityEgressInfo>();
   for (const spec of specs) {
-    const info: CapabilityEgressInfo = { egress: [], connections: [] };
+    const info: CapabilityEgressInfo = { egress: [], connections: [], profileFields: [] };
     out.set(spec.id, info);
     if (spec.manifestPath === undefined) {
       continue;
@@ -64,7 +72,19 @@ export function loadEgressSpecs(
         JSON.parse(readFileSync(spec.manifestPath, "utf8")),
       );
       info.connections = manifest.connections;
+      if (manifest.data !== undefined) {
+        info.data = manifest.data;
+      }
       for (const need of manifest.connections) {
+        if (need.provider === PROFILE_PROVIDER) {
+          info.profileFields = [...(need.actions ?? [])];
+          if (need.egress !== undefined) {
+            log(
+              `[gateway] ${spec.id}: ignoring egress spec on the profile connection (profile is never proxied)`,
+            );
+          }
+          continue;
+        }
         if (need.egress !== undefined) {
           const entry: EgressProviderSpec = {
             provider: need.provider,
@@ -138,6 +158,7 @@ export interface EgressServerOptions {
   audit: AuditWriter;
   log: (line: string) => void;
   oauth?: { google: GoogleOAuthCreds };
+  commonsDir?: string;
   googleTokenUrl?: string;
   fetchImpl?: typeof fetch;
 }
@@ -190,7 +211,8 @@ export class EgressServer {
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const route = `${request.method ?? ""} ${request.url ?? ""}`;
-    if (route !== "POST /fetch" && route !== "POST /token") {
+    const known = ["POST /fetch", "POST /token", "POST /profile", "POST /commons"];
+    if (!known.includes(route)) {
       reply(response, 404, { ok: false, error: { code: "egress_not_found", message: "unknown endpoint" } });
       return;
     }
@@ -214,8 +236,12 @@ export class EgressServer {
     }
     if (route === "POST /fetch") {
       await this.handleFetch(capability, body, response);
-    } else {
+    } else if (route === "POST /token") {
       await this.handleToken(capability, body, response);
+    } else if (route === "POST /profile") {
+      await this.handleProfile(capability, body, response);
+    } else {
+      this.handleCommons(capability, body, response);
     }
   }
 
@@ -264,6 +290,14 @@ export class EgressServer {
     const method = body["method"];
     if (method !== undefined && method !== "GET") {
       deny({ status: 405, code: "egress_method_not_allowed", message: "only GET egress is supported" });
+      return;
+    }
+    if (provider === PROFILE_PROVIDER) {
+      deny({
+        status: 403,
+        code: "egress_denied",
+        message: "the profile is never proxied through /fetch; use /profile",
+      });
       return;
     }
     const slot = typeof body["slot"] === "string" && body["slot"] !== "" ? body["slot"] : "default";
@@ -494,6 +528,169 @@ export class EgressServer {
       access_token: payload.access_token,
       expires_at: new Date(expiresAtMs).toISOString(),
     });
+  }
+
+  private async handleProfile(
+    capability: string,
+    body: Record<string, unknown>,
+    response: ServerResponse,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const rawFields = body["fields"];
+    const requested = Array.isArray(rawFields)
+      ? rawFields.filter((field): field is string => typeof field === "string")
+      : [];
+    const audit = (outcome: "ok" | "denied" | "error", errorCode?: string): void => {
+      this.options.audit.record({
+        ts: new Date().toISOString(),
+        capability,
+        tool: "profile:read",
+        outcome,
+        duration_ms: Date.now() - startedAt,
+        ...(outcome === "denied" ? { denied_by: "egress" as const } : {}),
+        ...(errorCode === undefined ? {} : { error_code: errorCode }),
+        ...(requested.length === 0 ? {} : { fields: requested }),
+      });
+    };
+    const deny = (status: number, code: string, message: string): void => {
+      audit(status >= 500 ? "error" : "denied", code);
+      reply(response, status, { ok: false, error: { code, message } });
+    };
+
+    if (
+      !Array.isArray(rawFields) ||
+      requested.length === 0 ||
+      requested.length !== rawFields.length ||
+      requested.length > PROFILE_MAX_FIELDS ||
+      requested.some((field) => field.length > 64 || !/^[a-z][a-z0-9_-]*$/u.test(field))
+    ) {
+      deny(400, "egress_bad_request", "fields must be a non-empty array of profile field tokens");
+      return;
+    }
+    const info = this.options.specs.get(capability);
+    const declares = info?.connections.some(
+      (need) => connectionId(need.provider, need.slot) === PROFILE_CONNECTION_ID,
+    );
+    if (info === undefined || declares !== true) {
+      deny(
+        403,
+        "egress_denied",
+        `capability '${capability}' does not declare connection ${PROFILE_CONNECTION_ID}`,
+      );
+      return;
+    }
+    const undeclared = requested.filter((field) => !info.profileFields.includes(field));
+    if (undeclared.length > 0) {
+      deny(
+        403,
+        "egress_denied",
+        `capability '${capability}' does not declare profile fields: ${undeclared.join(", ")}`,
+      );
+      return;
+    }
+    const denied = requested.filter(
+      (field) =>
+        !this.vault.checkGrant({
+          capability,
+          connectionId: PROFILE_CONNECTION_ID,
+          action: field,
+        }),
+    );
+    if (denied.length > 0) {
+      deny(
+        403,
+        "grant_missing",
+        `capability '${capability}' has no profile grant for fields: ${denied.join(", ")}; grant ${PROFILE_CONNECTION_ID} and retry`,
+      );
+      return;
+    }
+    const stored = this.vault.getProfile();
+    const fields: Record<string, string> = {};
+    for (const field of requested) {
+      const value = stored[field];
+      if (value !== undefined) {
+        fields[field] = value;
+      }
+    }
+    audit("ok");
+    reply(response, 200, { ok: true, fields });
+  }
+
+  private handleCommons(
+    capability: string,
+    body: Record<string, unknown>,
+    response: ServerResponse,
+  ): void {
+    const startedAt = Date.now();
+    const dataset = typeof body["dataset"] === "string" ? body["dataset"] : "";
+    const key = typeof body["key"] === "string" ? body["key"] : undefined;
+    const audit = (outcome: "ok" | "denied" | "error", errorCode?: string): void => {
+      this.options.audit.record({
+        ts: new Date().toISOString(),
+        capability,
+        tool: `commons:${dataset === "" ? "unknown" : dataset}`,
+        outcome,
+        duration_ms: Date.now() - startedAt,
+        ...(outcome === "denied" ? { denied_by: "egress" as const } : {}),
+        ...(errorCode === undefined ? {} : { error_code: errorCode }),
+        ...(key === undefined ? {} : { fields: [key] }),
+      });
+    };
+    const deny = (status: number, code: string, message: string): void => {
+      audit(status >= 500 ? "error" : "denied", code);
+      reply(response, status, { ok: false, error: { code, message } });
+    };
+
+    if (dataset === "" || !/^[a-z][a-z0-9_-]*$/u.test(dataset) || (key !== undefined && key.length > 128)) {
+      deny(400, "egress_bad_request", "dataset must be a token; key at most 128 chars");
+      return;
+    }
+    const declared = this.options.specs
+      .get(capability)
+      ?.data?.commons?.some((entry) => entry.dataset === dataset);
+    if (declared !== true) {
+      deny(
+        403,
+        "egress_denied",
+        `capability '${capability}' does not declare commons dataset '${dataset}'`,
+      );
+      return;
+    }
+    if (this.options.commonsDir === undefined) {
+      deny(503, "commons_not_configured", "the gateway has no commons directory configured");
+      return;
+    }
+    let text: string;
+    try {
+      text = readFileSync(join(this.options.commonsDir, `${dataset}.json`), "utf8");
+    } catch {
+      deny(404, "commons_not_found", `commons dataset '${dataset}' is not available`);
+      return;
+    }
+    if (text.length > 1024 * 1024) {
+      deny(500, "commons_error", `commons dataset '${dataset}' exceeds the 1MB limit`);
+      return;
+    }
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      deny(500, "commons_error", `commons dataset '${dataset}' is not valid JSON`);
+      return;
+    }
+    if (key !== undefined) {
+      const entry =
+        typeof data === "object" && data !== null && !Array.isArray(data)
+          ? (data as Record<string, unknown>)[key]
+          : undefined;
+      if (entry === undefined) {
+        deny(404, "commons_key_not_found", `commons dataset '${dataset}' has no entry '${key}'`);
+        return;
+      }
+      data = entry;
+    }
+    audit("ok");
+    reply(response, 200, { ok: true, dataset, data });
   }
 }
 
