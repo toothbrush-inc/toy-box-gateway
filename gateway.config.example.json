@@ -16,9 +16,22 @@
       "cwd": "/Users/dvd/code/davidd8/weather-compare",
       "manifestPath": "/Users/dvd/code/davidd8/weather-compare/capability.json",
       "secretsAccess": "broker"
+    },
+    {
+      "id": "fitness",
+      "command": "node",
+      "args": ["mcp/server.mjs"],
+      "cwd": "/Users/dvd/code/davidd8/fitness-tracker",
+      "manifestPath": "/Users/dvd/code/davidd8/fitness-tracker/capability.json",
+      "secretsAccess": "broker",
+      "env": {
+        "FITNESS_DB": "/Users/dvd/code/davidd8/fitness-tracker/workouts.json",
+        "FITNESS_GAPS": "/Users/dvd/code/davidd8/fitness-tracker/gaps.json"
+      }
     }
   ],
   "audit": { "maxBytes": 5242880, "keepFiles": 5 },
+  "commons": { "dir": "/Users/dvd/code/davidd8/fitness-tracker/data" },
   "oauth": {
     "google": {
       "envFile": "/Users/dvd/code/davidd8/calsync-oss/.env"
