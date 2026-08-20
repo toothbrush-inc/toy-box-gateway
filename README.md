@@ -177,6 +177,38 @@ This is the hosted-security seam: locally the boundary is cooperative (a
 process under your OS user could still read the vault); hosted, the same
 capability code runs in a sandbox whose only network path is the broker.
 
+## Views (converse → tune → pin → glance)
+
+A **view** is a pinned, compiled artifact authored in conversation: up to 8
+bound queries (producer QUERY tools with frozen arguments) + a pure sync JS
+transform `(input) => CardModel` the agent writes once + a refresh policy.
+**Serving is deterministic — no LLM in the path**: identical output every
+render, milliseconds, zero tokens.
+
+- **Pin = compile + prove.** `pin_view` dry-runs end to end and refuses on any
+  failure (nothing persists); the refusal carries the transform/query errors
+  so the agent iterates in conversation. A view that exists has rendered.
+- **Views ride the peer-call machinery.** Each view is grant-consumer
+  `view-<id>`: pinning writes the per-tool grants (the pin IS the consent),
+  unpinning revokes them, and mid-session revocation degrades the card to an
+  error render. Views bind only tools the producer's manifest annotates as
+  `tools.query` (side-effect-free) — a glance can never fire a mutation.
+- **Provenance.** Snapshots and cards record which producer at which version
+  supplied each query (`fitness@0.1.0`), and every query lands in the audit
+  as a `call:` row attributed to `view-<id>` and the owner — never values.
+- **Transform sandbox.** `node:vm`, only `JSON` and `Math` in scope, 1s
+  budget, sync-only; a cooperative local boundary (hosted upgrades to
+  isolates). The bounded CardModel (stats / keyValues / list / table / text /
+  spark, with hard size caps) keeps cards card-sized.
+- **Refresh.** A background interval per view plus a refresh-on-read backstop
+  (a stale snapshot re-runs before serving); single-flight per view.
+- **Surfaces.** MCP resources `view://<id>` (list/read/subscribe — agents see
+  your cards too) and, in serve mode, bearer-authed `GET /views`,
+  `GET /views/<id>` (self-contained HTML, no scripts) and `GET /views/<id>.json`.
+- Meta tools: `pin_view`, `run_view`, `list_views`, `unpin_view`. Config block
+  `views` (default-enabled): `{enabled, dir, maxViews, queryTimeoutMs,
+  transformTimeoutMs}`.
+
 ## Future (not built)
 
 Rate limits per grant; calsync's internal adoption of `/token` (a

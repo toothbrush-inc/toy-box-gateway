@@ -57,6 +57,28 @@ export {
 } from "./registry.js";
 export { redactErrorMessage } from "./redact.js";
 export {
+  CardModelSchema,
+  CardSectionSchema,
+  viewCapabilityId,
+  ViewSpecInputSchema,
+  ViewSpecSchema,
+  viewUri,
+  type CardModel,
+  type CardSection,
+  type QueryProvenance,
+  type ViewSnapshot,
+  type ViewSpec,
+  type ViewSpecInput,
+} from "./views/model.js";
+export { renderCardHtml, renderCardJson } from "./views/render.js";
+export { runTransform, TransformError, type TransformErrorKind } from "./views/sandbox.js";
+export {
+  ViewsService,
+  type PinResult,
+  type ViewNotifier,
+  type ViewsServiceOptions,
+} from "./views/service.js";
+export {
   buildGatewayStatus,
   checkManifest,
   readGrantSummary,

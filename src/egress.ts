@@ -53,6 +53,8 @@ export interface CapabilityEgressInfo {
   profileFields: string[];
   /** Declared peer calls: producer capability id -> tools this capability may invoke. */
   peerCalls: Map<string, string[]>;
+  /** This capability's own manifest tools.query (side-effect-free tools). */
+  queryTools: string[];
 }
 
 export function newEgressToken(): string {
@@ -71,6 +73,7 @@ export function loadEgressSpecs(
       connections: [],
       profileFields: [],
       peerCalls: new Map(),
+      queryTools: [],
     };
     out.set(spec.id, info);
     if (spec.manifestPath === undefined) {
@@ -84,6 +87,7 @@ export function loadEgressSpecs(
       if (manifest.data !== undefined) {
         info.data = manifest.data;
       }
+      info.queryTools = [...(manifest.tools?.query ?? [])];
       for (const need of manifest.connections) {
         if (need.provider === PROFILE_PROVIDER) {
           info.profileFields = [...(need.actions ?? [])];
@@ -194,6 +198,7 @@ export interface EgressServerOptions {
     producer: string,
     tool: string,
     args: Record<string, unknown>,
+    opts?: { timeoutMs?: number },
   ) => Promise<PeerToolResult>;
 }
 

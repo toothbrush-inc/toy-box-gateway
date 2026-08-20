@@ -54,6 +54,7 @@ const WEATHER_INFO: CapabilityEgressInfo = {
   ],
   profileFields: [],
   peerCalls: new Map(),
+  queryTools: [],
 };
 
 const CALSYNC_INFO: CapabilityEgressInfo = {
@@ -61,6 +62,7 @@ const CALSYNC_INFO: CapabilityEgressInfo = {
   connections: [{ provider: "google", slot: "personal", optional: false }],
   profileFields: [],
   peerCalls: new Map(),
+  queryTools: [],
 };
 
 const FITNESS_INFO: CapabilityEgressInfo = {
@@ -71,6 +73,7 @@ const FITNESS_INFO: CapabilityEgressInfo = {
   profileFields: ["units", "timezone"],
   data: { commons: [{ dataset: "exercise-catalog" }] },
   peerCalls: new Map(),
+  queryTools: ["get_workout_stats"],
 };
 
 const COACH_INFO: CapabilityEgressInfo = {
@@ -80,6 +83,7 @@ const COACH_INFO: CapabilityEgressInfo = {
   ],
   profileFields: [],
   peerCalls: new Map([["fitness", ["get_workout_stats"]]]),
+  queryTools: [],
 };
 
 interface Harness {
@@ -697,6 +701,7 @@ describe("egress helpers", () => {
       connections: [],
       profileFields: [],
       peerCalls: new Map(),
+      queryTools: [],
     });
     expect(warnings.some((line) => line.includes("broken"))).toBe(true);
   });

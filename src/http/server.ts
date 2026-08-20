@@ -18,6 +18,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import type { ServeConfig } from "../config.js";
 import { createGatewaySession, type CallIdentity, type GatewayCore } from "../gateway.js";
+import { renderCardHtml, renderCardJson } from "../views/render.js";
 import { BoundedEventStore } from "./event-store.js";
 import { SessionManager } from "./sessions.js";
 
@@ -165,6 +166,49 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   app.delete("/mcp", bearer, (req: Request, res: Response) => {
     void withExistingSession(req, res);
   });
+
+  // The glanceable card surface. Bearer-authed like /mcp; HTML by default,
+  // .json for machines. A failed last run renders as an error card, not a 500.
+  const views = core.views;
+  if (views !== undefined) {
+    app.get("/views", bearer, (_req: Request, res: Response) => {
+      const list = views.list().map((spec) => {
+        const snapshot = views.getSnapshot(spec.id);
+        return {
+          id: spec.id,
+          title: spec.title,
+          sensitivity: spec.sensitivity,
+          refresh: spec.refresh,
+          updatedAt: spec.updatedAt,
+          lastRun: snapshot?.startedAt ?? null,
+          lastOk: snapshot?.ok ?? null,
+        };
+      });
+      res.status(200).json({ ok: true, data: { views: list } });
+    });
+    app.get("/views/:id", bearer, async (req: Request, res: Response) => {
+      // View ids are TOKEN (no dots), so a trailing ".json" is unambiguous.
+      const raw = typeof req.params["id"] === "string" ? req.params["id"] : "";
+      const wantsJson = raw.endsWith(".json");
+      const id = wantsJson ? raw.slice(0, -".json".length) : raw;
+      const spec = views.get(id);
+      if (spec === undefined) {
+        res.status(404).json({ ok: false, error: { code: "unknown_view", message: `no pinned view '${id}'` } });
+        return;
+      }
+      const snapshot = await views.getFresh(id);
+      if (snapshot === undefined) {
+        res.status(404).json({ ok: false, error: { code: "unknown_view", message: `no pinned view '${id}'` } });
+        return;
+      }
+      res.setHeader("Cache-Control", "no-store");
+      if (wantsJson) {
+        res.status(200).json(renderCardJson(spec, snapshot));
+      } else {
+        res.status(200).type("text/html; charset=utf-8").send(renderCardHtml(spec, snapshot));
+      }
+    });
+  }
 
   const listener: NodeHttpServer = await new Promise((resolve, reject) => {
     const server = app.listen(serve.port, serve.host, () => {

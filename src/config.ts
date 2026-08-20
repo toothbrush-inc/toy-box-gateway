@@ -44,6 +44,15 @@ export const GatewayConfigSchema = z.object({
     .default({ maxBytes: DEFAULT_AUDIT_MAX_BYTES, keepFiles: DEFAULT_AUDIT_KEEP_FILES }),
   commons: z.object({ dir: z.string().min(1) }).optional(),
   dataDir: z.string().min(1).optional(),
+  views: z
+    .object({
+      enabled: z.boolean().default(true),
+      dir: z.string().min(1).optional(),
+      maxViews: z.number().int().positive().max(200).default(50),
+      queryTimeoutMs: z.number().int().positive().default(30_000),
+      transformTimeoutMs: z.number().int().positive().max(10_000).default(1_000),
+    })
+    .default({ enabled: true, maxViews: 50, queryTimeoutMs: 30_000, transformTimeoutMs: 1_000 }),
   oauth: z
     .object({
       google: z
@@ -103,6 +112,7 @@ export const GatewayConfigSchema = z.object({
 });
 
 export type ServeConfig = NonNullable<z.infer<typeof GatewayConfigSchema>["serve"]>;
+export type ViewsConfig = z.infer<typeof GatewayConfigSchema>["views"];
 
 /** Parses "label:token,label2:token2" (or a bare token => label "default"). */
 export function parseBearerTokens(raw: string | undefined): Map<string, string> {

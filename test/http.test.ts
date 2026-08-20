@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -37,9 +37,14 @@ async function startHarness(): Promise<HttpHarness> {
   const dir = mkdtempSync(join(tmpdir(), "gateway-http-"));
   dirs.push(dir);
   const fake = await startFakeWeather();
+  const manifestPath = join(dir, "capability.json");
+  writeFileSync(
+    manifestPath,
+    JSON.stringify({ id: "weather", connections: [], tools: { query: ["echo"] } }),
+  );
   const config: GatewayConfig = {
     ...GatewayConfigSchema.parse({
-      capabilities: [{ id: "weather", command: "unused" }],
+      capabilities: [{ id: "weather", command: "unused", manifestPath }],
       serve: {
         port: 0,
         host: "127.0.0.1",
@@ -183,6 +188,53 @@ describe("http gateway", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list", params: {} }),
     });
     expect(afterwards.status).toBe(404);
+  });
+});
+
+describe("http views surface", () => {
+  const CARD_VIEW = {
+    id: "morning",
+    title: "Morning echo",
+    owner: "dvd",
+    sensitivity: "shareable",
+    queries: [{ key: "e", tool: "weather__echo", arguments: { text: "hey <world>" } }],
+    transform:
+      "(input) => ({ title: 'Morning', sections: [{ kind: 'text', text: input.e.data.echoed }] })",
+    refresh: { intervalMs: null },
+  };
+
+  it("serves bearer-authed HTML and JSON cards", async () => {
+    const harness = await startHarness();
+    const views = harness.core.views;
+    expect(views).toBeDefined();
+    const pinned = await views?.pin(CARD_VIEW);
+    expect(pinned?.ok).toBe(true);
+
+    const unauthorized = await fetch(`${harness.url}/views`);
+    expect(unauthorized.status).toBe(401);
+
+    const headers = { Authorization: "Bearer secret-token-1" };
+    const index = await fetch(`${harness.url}/views`, { headers });
+    expect(index.status).toBe(200);
+    const list = (await index.json()) as { data: { views: { id: string }[] } };
+    expect(list.data.views[0]?.id).toBe("morning");
+
+    const html = await fetch(`${harness.url}/views/morning`, { headers });
+    expect(html.status).toBe(200);
+    expect(html.headers.get("content-type")).toContain("text/html");
+    const page = await html.text();
+    expect(page).toContain("Morning");
+    expect(page).toContain("hey &lt;world&gt;");
+    expect(page).not.toContain("<script");
+
+    const json = await fetch(`${harness.url}/views/morning.json`, { headers });
+    expect(json.status).toBe(200);
+    const card = (await json.json()) as { ok: boolean; model: { title: string } };
+    expect(card.ok).toBe(true);
+    expect(card.model.title).toBe("Morning");
+
+    const missing = await fetch(`${harness.url}/views/nope`, { headers });
+    expect(missing.status).toBe(404);
   });
 });
 

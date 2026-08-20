@@ -8,8 +8,13 @@ import {
   CallToolRequestSchema,
   CallToolResultSchema,
   ErrorCode,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
   ListToolsRequestSchema,
   McpError,
+  ReadResourceRequestSchema,
+  SubscribeRequestSchema,
+  UnsubscribeRequestSchema,
   type CallToolRequest,
   type CallToolResult,
   type ServerNotification,
@@ -42,8 +47,17 @@ import { evaluatePolicy } from "./policy.js";
 import { parsePrefixedName, ToolRegistry } from "./registry.js";
 import { redactErrorMessage } from "./redact.js";
 import { buildGatewayStatus } from "./status.js";
+import { viewUri } from "./views/model.js";
+import { renderCardJson } from "./views/render.js";
+import { ViewsService } from "./views/service.js";
+import {
+  LIST_VIEWS_TOOL,
+  PIN_VIEW_TOOL,
+  RUN_VIEW_TOOL,
+  UNPIN_VIEW_TOOL,
+} from "./views/tools.js";
 
-export const GATEWAY_VERSION = "0.6.0";
+export const GATEWAY_VERSION = "0.7.0";
 
 type CallExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -149,6 +163,7 @@ export interface GatewayCore {
   children: ChildManager;
   audit: AuditWriter;
   egress: EgressServer;
+  views?: ViewsService;
   egressTokenFor(capabilityId: string): string | undefined;
   listTools(): Tool[];
   callTool(
@@ -165,6 +180,8 @@ export interface GatewayCore {
 export interface GatewaySession {
   server: Server;
   identity: CallIdentity;
+  /** view:// URIs this session subscribed to (present when views are enabled). */
+  resourceSubscriptions?: ReadonlySet<string>;
   connect(transport: Transport): Promise<void>;
   close(): Promise<void>;
 }
@@ -263,6 +280,39 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
   if (config.oauth?.google !== undefined) {
     oauth = { google: loadGoogleOAuthCreds(config.oauth.google) };
   }
+  // The single peer-call enforcement seam: producer mounted + tool policy,
+  // used by both the broker's POST /call route and the views executor.
+  const callPeer = async (
+    producer: string,
+    tool: string,
+    args: Record<string, unknown>,
+    opts?: { timeoutMs?: number },
+  ): Promise<CallToolResult> => {
+    const producerSpec = specs.get(producer);
+    const mounted = children.get(producer);
+    if (
+      producerSpec === undefined ||
+      mounted === undefined ||
+      mounted.state !== "connected" ||
+      mounted.client === null
+    ) {
+      throw codedError(`capability '${producer}' is not mounted or not connected`, "call_not_mounted");
+    }
+    const decision = evaluatePolicy(producerSpec, tool);
+    if (!decision.allowed) {
+      throw codedError(decision.message, "denied_by_policy");
+    }
+    const callOptions: RequestOptions = {};
+    if (opts?.timeoutMs !== undefined) {
+      callOptions.timeout = opts.timeoutMs;
+    }
+    return (await mounted.client.callTool(
+      { name: tool, arguments: args },
+      CallToolResultSchema,
+      callOptions,
+    )) as CallToolResult;
+  };
+
   const egressServer = new EgressServer({
     tokens: capabilityByToken,
     specs: egressSpecs,
@@ -272,28 +322,38 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
     ...(oauth === undefined ? {} : { oauth }),
     ...(config.commons === undefined ? {} : { commonsDir: config.commons.dir }),
     versionOf: (capabilityId) => versionByCapability.get(capabilityId) ?? null,
-    callPeer: async (producer, tool, args) => {
-      const producerSpec = specs.get(producer);
-      const mounted = children.get(producer);
-      if (
-        producerSpec === undefined ||
-        mounted === undefined ||
-        mounted.state !== "connected" ||
-        mounted.client === null
-      ) {
-        throw codedError(`capability '${producer}' is not mounted or not connected`, "call_not_mounted");
-      }
-      const decision = evaluatePolicy(producerSpec, tool);
-      if (!decision.allowed) {
-        throw codedError(decision.message, "denied_by_policy");
-      }
-      return (await mounted.client.callTool(
-        { name: tool, arguments: args },
-        CallToolResultSchema,
-      )) as CallToolResult;
-    },
+    callPeer,
   });
   const egressUrl = await egressServer.listen();
+
+  let views: ViewsService | undefined;
+  if (config.views.enabled) {
+    views = new ViewsService({
+      dir: config.views.dir ?? join(resolveGatewayHome(undefined, env), "views"),
+      config: config.views,
+      env,
+      audit,
+      callPeer,
+      versionOf: (capabilityId) => versionByCapability.get(capabilityId) ?? null,
+      queryToolsOf: (capabilityId) => egressSpecs.get(capabilityId)?.queryTools,
+      isConfigured: (capabilityId) => specs.has(capabilityId),
+      notify: {
+        resourceListChanged: () => {
+          for (const session of sessions) {
+            void session.server.sendResourceListChanged().catch(() => undefined);
+          }
+        },
+        resourceUpdated: (uri) => {
+          for (const session of sessions) {
+            if (session.resourceSubscriptions?.has(uri) === true) {
+              void session.server.sendResourceUpdated({ uri }).catch(() => undefined);
+            }
+          }
+        },
+      },
+      log,
+    });
+  }
 
   function rebuild(): void {
     const connected = children
@@ -351,6 +411,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
     children,
     audit,
     egress: egressServer,
+    ...(views === undefined ? {} : { views }),
     egressTokenFor: (capabilityId) => tokenByCapability.get(capabilityId),
     listTools: () => [
       ...registry.listTools(),
@@ -360,10 +421,14 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
       GATEWAY_SET_PROFILE_TOOL,
       GATEWAY_GRANT_TOOL,
       GATEWAY_REVOKE_GRANT_TOOL,
+      ...(views === undefined
+        ? []
+        : [PIN_VIEW_TOOL, RUN_VIEW_TOOL, LIST_VIEWS_TOOL, UNPIN_VIEW_TOOL]),
     ],
     attachSession: (session) => sessions.add(session),
     detachSession: (session) => sessions.delete(session),
     async close(): Promise<void> {
+      views?.close();
       for (const session of [...sessions]) {
         sessions.delete(session);
         await session.server.close().catch(() => undefined);
@@ -576,6 +641,120 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
         });
       }
 
+      if (
+        name === PIN_VIEW_TOOL.name ||
+        name === RUN_VIEW_TOOL.name ||
+        name === LIST_VIEWS_TOOL.name ||
+        name === UNPIN_VIEW_TOOL.name
+      ) {
+        if (views === undefined) {
+          record({ capability: "gateway", tool: name, outcome: "error", error_code: "views_disabled" });
+          return errorResult("views_disabled", "views are disabled in the gateway config");
+        }
+        const viewsService = views;
+        const args = request.params.arguments ?? {};
+
+        if (name === LIST_VIEWS_TOOL.name) {
+          const list = viewsService.list().map((spec) => {
+            const snapshot = viewsService.getSnapshot(spec.id);
+            return {
+              id: spec.id,
+              title: spec.title,
+              sensitivity: spec.sensitivity,
+              refresh: spec.refresh,
+              updatedAt: spec.updatedAt,
+              lastRun: snapshot?.startedAt ?? null,
+              lastOk: snapshot?.ok ?? null,
+            };
+          });
+          record({ capability: "gateway", tool: name, outcome: "ok" });
+          return jsonResult({ ok: true, data: { views: list } });
+        }
+
+        if (name === PIN_VIEW_TOOL.name) {
+          const result = await viewsService.pin(args["view"]);
+          if (!result.ok) {
+            record({ capability: "gateway", tool: name, outcome: "error", error_code: result.code });
+            const payload = {
+              ok: false,
+              error: { code: result.code, message: result.message },
+              ...(result.error === undefined ? {} : { detail: result.error }),
+              ...(result.queryErrors === undefined ? {} : { queryErrors: result.queryErrors }),
+            };
+            return {
+              content: [{ type: "text", text: JSON.stringify(payload) }],
+              structuredContent: payload,
+              isError: true,
+            };
+          }
+          record({ capability: "gateway", tool: name, outcome: "ok", fields: [result.spec.id] });
+          const payload = {
+            ok: true,
+            data: {
+              view: {
+                id: result.spec.id,
+                title: result.spec.title,
+                sensitivity: result.spec.sensitivity,
+                refresh: result.spec.refresh,
+                updatedAt: result.spec.updatedAt,
+              },
+              snapshot: result.snapshot,
+            },
+          };
+          return {
+            content: [
+              { type: "text", text: JSON.stringify(payload) },
+              {
+                type: "resource_link",
+                uri: viewUri(result.spec.id),
+                name: result.spec.id,
+                title: result.spec.title,
+                mimeType: "application/json",
+              },
+            ],
+            structuredContent: payload,
+          };
+        }
+
+        const id = typeof args["id"] === "string" ? args["id"] : "";
+
+        if (name === UNPIN_VIEW_TOOL.name) {
+          if (!viewsService.unpin(id)) {
+            record({ capability: "gateway", tool: name, outcome: "error", error_code: "unknown_view" });
+            return errorResult("unknown_view", `no pinned view '${id}'; call list_views`);
+          }
+          record({ capability: "gateway", tool: name, outcome: "ok", fields: [id] });
+          return jsonResult({ ok: true, data: { id, unpinned: true } });
+        }
+
+        const spec = viewsService.get(id);
+        const snapshot =
+          spec === undefined
+            ? undefined
+            : args["refresh"] === true
+              ? await viewsService.run(id, { force: true })
+              : await viewsService.getFresh(id);
+        if (spec === undefined || snapshot === undefined) {
+          record({ capability: "gateway", tool: name, outcome: "error", error_code: "unknown_view" });
+          return errorResult("unknown_view", `no pinned view '${id}'; call list_views`);
+        }
+        record({ capability: "gateway", tool: name, outcome: "ok", fields: [id] });
+        const payload = { ok: true, data: renderCardJson(spec, snapshot) };
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(payload) },
+            {
+              type: "resource_link",
+              uri: viewUri(id),
+              name: id,
+              title: spec.title,
+              mimeType: "application/json",
+            },
+          ],
+          structuredContent: payload,
+        };
+      }
+
       const parsed = parsePrefixedName(name);
       const spec = parsed === null ? undefined : specs.get(parsed.capabilityId);
       if (parsed === null || spec === undefined) {
@@ -673,25 +852,36 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
 
   await children.start();
   rebuild();
+  views?.init();
 
   return core;
 }
 
 export function createGatewaySession(core: GatewayCore, identity: CallIdentity = {}): GatewaySession {
+  const views = core.views;
   const server = new Server(
     { name: "capability-gateway", version: GATEWAY_VERSION },
     {
-      capabilities: { tools: { listChanged: true } },
+      capabilities: {
+        tools: { listChanged: true },
+        ...(views === undefined ? {} : { resources: { subscribe: true, listChanged: true } }),
+      },
       instructions:
         "Gateway over local capability MCP servers. Tools are namespaced as " +
         "<capability>__<tool>. Results are typed JSON ({ok,data} | {ok:false,error}). " +
-        "Use gateway_status for health and gateway_reconnect to revive a crashed capability.",
+        "Use gateway_status for health and gateway_reconnect to revive a crashed capability." +
+        (views === undefined
+          ? ""
+          : " Pinned views are served as view://<id> resources; author them with " +
+            "pin_view (dry-run proves before persisting), then run_view/list_views/unpin_view."),
     },
   );
 
+  const subscriptions = new Set<string>();
   const session: GatewaySession = {
     server,
     identity,
+    ...(views === undefined ? {} : { resourceSubscriptions: subscriptions }),
     async connect(transport: Transport): Promise<void> {
       await server.connect(transport);
       core.attachSession(session);
@@ -706,6 +896,36 @@ export function createGatewaySession(core: GatewayCore, identity: CallIdentity =
   server.setRequestHandler(CallToolRequestSchema, (request, extra) =>
     core.callTool(request, extra, session.identity),
   );
+
+  if (views !== undefined) {
+    const RESOURCE_NOT_FOUND = -32002 as ErrorCode;
+    const knownUri = (uri: string): boolean =>
+      views.list().some((spec) => viewUri(spec.id) === uri);
+    server.setRequestHandler(ListResourcesRequestSchema, () => ({
+      resources: views.listResources(),
+    }));
+    server.setRequestHandler(ListResourceTemplatesRequestSchema, () => ({
+      resourceTemplates: [],
+    }));
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      const contents = await views.readResource(request.params.uri);
+      if (contents === undefined) {
+        throw new McpError(RESOURCE_NOT_FOUND, `resource not found: ${request.params.uri}`);
+      }
+      return { contents: [contents] };
+    });
+    server.setRequestHandler(SubscribeRequestSchema, (request) => {
+      if (!knownUri(request.params.uri)) {
+        throw new McpError(RESOURCE_NOT_FOUND, `resource not found: ${request.params.uri}`);
+      }
+      subscriptions.add(request.params.uri);
+      return {};
+    });
+    server.setRequestHandler(UnsubscribeRequestSchema, (request) => {
+      subscriptions.delete(request.params.uri);
+      return {};
+    });
+  }
 
   return session;
 }

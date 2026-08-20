@@ -118,7 +118,7 @@ describe("gateway", () => {
         "gateway_revoke_grant",
       ]),
     );
-    expect(names).toHaveLength(10);
+    expect(names).toHaveLength(14);
     const echo = listed.tools.find((tool) => tool.name === "weather__echo");
     expect(echo?.description).toBe("Echoes input");
     expect(echo?.inputSchema).toMatchObject({
