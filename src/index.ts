@@ -43,6 +43,15 @@ export {
   type GatewaySession,
 } from "./gateway.js";
 export { staticTokenVerifier } from "./http/auth-static.js";
+export { signJwt, verifyJwt, type JwtPayload } from "./http/oauth/jwt.js";
+export {
+  GatewayOAuthProvider,
+  SESSION_COOKIE,
+  type GatewayOAuthProviderOptions,
+  type GoogleCallbackResult,
+} from "./http/oauth/provider.js";
+export { buildServeAuth, type ServeAuthRuntime } from "./http/oauth/runtime.js";
+export { OAuthDiskStore, type RefreshRecord } from "./http/oauth/store.js";
 export { BoundedEventStore } from "./http/event-store.js";
 export { SessionManager } from "./http/sessions.js";
 export { startHttpGateway, type HttpGateway, type HttpGatewayOptions } from "./http/server.js";

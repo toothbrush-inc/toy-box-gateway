@@ -11,6 +11,7 @@ import express, { type Request, type Response } from "express";
 
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
+import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -20,14 +21,18 @@ import type { ServeConfig } from "../config.js";
 import { createGatewaySession, type CallIdentity, type GatewayCore } from "../gateway.js";
 import { renderCardHtml, renderCardJson } from "../views/render.js";
 import { BoundedEventStore } from "./event-store.js";
+import { SESSION_COOKIE, type GatewayOAuthProvider } from "./oauth/provider.js";
 import { SessionManager } from "./sessions.js";
 
 export interface HttpGatewayOptions {
   core: GatewayCore;
   serve: ServeConfig;
   verifier: OAuthTokenVerifier;
+  /** Stage 2: the gateway's own OAuth AS — mounts the auth router, the Google
+   * callback, and browser-session (cookie) auth for the views surface. */
+  oauth?: GatewayOAuthProvider;
   log?: (line: string) => void;
-  /** Extra express wiring (stage 2 mounts the OAuth router here) before /mcp routes. */
+  /** Extra express wiring before /mcp routes. */
   configureApp?: (app: express.Express) => void;
 }
 
@@ -40,8 +45,22 @@ function rpcError(code: number, message: string): Record<string, unknown> {
   return { jsonrpc: "2.0", error: { code, message }, id: null };
 }
 
+function readCookie(req: Request, name: string): string | undefined {
+  const header = req.headers.cookie;
+  if (header === undefined) {
+    return undefined;
+  }
+  for (const part of header.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator > 0 && part.slice(0, separator).trim() === name) {
+      return decodeURIComponent(part.slice(separator + 1).trim());
+    }
+  }
+  return undefined;
+}
+
 export async function startHttpGateway(options: HttpGatewayOptions): Promise<HttpGateway> {
-  const { core, serve, verifier } = options;
+  const { core, serve, verifier, oauth } = options;
   const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const publicUrl = serve.publicUrl.replace(/\/+$/u, "");
   const allowedHosts = serve.allowedHosts ?? [new URL(publicUrl).hostname];
@@ -52,7 +71,9 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   });
 
   const app = express();
-  app.set("trust proxy", true);
+  // Exactly one trusted hop (Caddy). `true` would let clients spoof their IP
+  // via X-Forwarded-For and bypass the auth endpoints' rate limiting.
+  app.set("trust proxy", 1);
   app.use(hostHeaderValidation(allowedHosts));
   app.use(
     "/mcp",
@@ -72,10 +93,85 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   app.use(express.json({ limit: "4mb" }));
   options.configureApp?.(app);
 
+  if (oauth !== undefined) {
+    // The gateway is its own OAuth AS: metadata, DCR, authorize, token, revoke.
+    app.use(
+      mcpAuthRouter({
+        provider: oauth,
+        issuerUrl: new URL(publicUrl),
+        resourceServerUrl: new URL(`${publicUrl}/mcp`),
+        ...(serve.auth.stage === "oauth" ? { scopesSupported: serve.auth.oauth.scopesSupported } : {}),
+      }),
+    );
+    const secureCookies = publicUrl.startsWith("https:");
+    app.get("/auth/google/callback", async (req: Request, res: Response) => {
+      try {
+        const result = await oauth.handleGoogleCallback({
+          ...(typeof req.query["state"] === "string" ? { state: req.query["state"] } : {}),
+          ...(typeof req.query["code"] === "string" ? { code: req.query["code"] } : {}),
+          ...(typeof req.query["error"] === "string" ? { error: req.query["error"] } : {}),
+        });
+        if (result.sessionCookie !== undefined) {
+          res.cookie(SESSION_COOKIE, result.sessionCookie, {
+            httpOnly: true,
+            secure: secureCookies,
+            sameSite: "lax",
+            maxAge: 7 * 86_400_000,
+            path: "/",
+          });
+        }
+        res.redirect(result.redirectTo);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        res.status(400).type("text/plain").send(`sign-in failed: ${message}`);
+      }
+    });
+    app.get("/login", (req: Request, res: Response) => {
+      const next = typeof req.query["next"] === "string" ? req.query["next"] : "/views";
+      res.redirect(oauth.startBrowserLogin(next));
+    });
+    app.get("/logout", (_req: Request, res: Response) => {
+      res.clearCookie(SESSION_COOKIE, { path: "/" });
+      res.status(200).type("text/plain").send("signed out");
+    });
+    // Caddy forward_auth target: 204 with a valid session, else redirect
+    // browsers to /login and 401 everything else.
+    app.get("/session/verify", (req: Request, res: Response) => {
+      if (oauth.verifySessionCookie(readCookie(req, SESSION_COOKIE)) !== null) {
+        res.status(204).end();
+        return;
+      }
+      const forwarded = req.headers["x-forwarded-uri"];
+      const accept = req.headers.accept ?? "";
+      if (typeof forwarded === "string" || accept.includes("text/html")) {
+        const next = typeof forwarded === "string" ? forwarded : "/";
+        res.redirect(`/login?next=${encodeURIComponent(next)}`);
+        return;
+      }
+      res.status(401).end();
+    });
+  }
+
   const bearer = requireBearerAuth({
     verifier,
     resourceMetadataUrl: `${publicUrl}/.well-known/oauth-protected-resource/mcp`,
   });
+
+  // Views accept a browser session cookie (stage 2) or the API bearer token;
+  // unauthenticated browsers get sent to the login flow instead of a 401.
+  const viewsAuth: express.RequestHandler = (req, res, next) => {
+    if (oauth !== undefined) {
+      if (oauth.verifySessionCookie(readCookie(req, SESSION_COOKIE)) !== null) {
+        next();
+        return;
+      }
+      if (req.headers.authorization === undefined && (req.headers.accept ?? "").includes("text/html")) {
+        res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+        return;
+      }
+    }
+    bearer(req, res, next);
+  };
 
   const withExistingSession = async (req: Request, res: Response): Promise<void> => {
     const auth = req.auth;
@@ -171,7 +267,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   // .json for machines. A failed last run renders as an error card, not a 500.
   const views = core.views;
   if (views !== undefined) {
-    app.get("/views", bearer, (_req: Request, res: Response) => {
+    app.get("/views", viewsAuth, (_req: Request, res: Response) => {
       const list = views.list().map((spec) => {
         const snapshot = views.getSnapshot(spec.id);
         return {
@@ -186,7 +282,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
       });
       res.status(200).json({ ok: true, data: { views: list } });
     });
-    app.get("/views/:id", bearer, async (req: Request, res: Response) => {
+    app.get("/views/:id", viewsAuth, async (req: Request, res: Response) => {
       // View ids are TOKEN (no dots), so a trailing ".json" is unambiguous.
       const raw = typeof req.params["id"] === "string" ? req.params["id"] : "";
       const wantsJson = raw.endsWith(".json");

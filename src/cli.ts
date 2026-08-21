@@ -4,9 +4,9 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
-import { loadGatewayConfig, parseBearerTokens, resolveConfigPath } from "./config.js";
+import { loadGatewayConfig, resolveConfigPath } from "./config.js";
 import { createGateway, createGatewayCore, GATEWAY_VERSION } from "./gateway.js";
-import { staticTokenVerifier } from "./http/auth-static.js";
+import { buildServeAuth } from "./http/oauth/runtime.js";
 import { startHttpGateway } from "./http/server.js";
 
 function onShutdown(close: () => Promise<void>): void {
@@ -43,27 +43,23 @@ async function runServe(args: readonly string[]): Promise<void> {
   if (serve === undefined) {
     throw new Error(`config at ${configPath} has no "serve" block (required for capability-gateway serve)`);
   }
-  if (serve.auth.stage !== "static") {
-    throw new Error('serve.auth.stage "oauth" is not implemented yet; use "static"');
-  }
-  const tokens = parseBearerTokens(process.env[serve.auth.tokensEnv]);
-  if (tokens.size === 0) {
-    throw new Error(
-      `no bearer tokens in $${serve.auth.tokensEnv} (format: label:token[,label2:token2])`,
-    );
-  }
+  const log = (line: string): void => {
+    process.stderr.write(`${line}\n`);
+  };
+  const auth = buildServeAuth(serve, process.env, log);
   const core = await createGatewayCore({ config, version: GATEWAY_VERSION });
   const http = await startHttpGateway({
     core,
     serve,
-    verifier: staticTokenVerifier(tokens, serve.publicUrl),
+    verifier: auth.verifier,
+    ...(auth.provider === undefined ? {} : { oauth: auth.provider }),
   });
   onShutdown(async () => {
     await http.close();
     await core.close();
   });
   process.stderr.write(
-    `capability-gateway: serving ${serve.publicUrl}/mcp with ${String(tokens.size)} bearer token(s), ` +
+    `capability-gateway: serving ${serve.publicUrl}/mcp with ${auth.description}, ` +
       `${String(config.capabilities.length)} capabilities\n`,
   );
 }
