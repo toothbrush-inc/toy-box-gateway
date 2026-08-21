@@ -233,6 +233,15 @@ describe("http views surface", () => {
     expect(card.ok).toBe(true);
     expect(card.model.title).toBe("Morning");
 
+    // browsers get an HTML index; API clients keep JSON
+    const indexHtml = await fetch(`${harness.url}/views`, {
+      headers: { ...headers, Accept: "text/html" },
+    });
+    expect(indexHtml.headers.get("content-type")).toContain("text/html");
+    const indexPage = await indexHtml.text();
+    expect(indexPage).toContain("Morning echo");
+    expect(indexPage).toContain('href="/views/morning"');
+
     const missing = await fetch(`${harness.url}/views/nope`, { headers });
     expect(missing.status).toBe(404);
   });

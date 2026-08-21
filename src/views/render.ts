@@ -110,6 +110,50 @@ function renderSection(section: CardSection): string {
   }
 }
 
+export interface ViewIndexEntry {
+  id: string;
+  title: string;
+  sensitivity: string;
+  intervalMs: number | null;
+  lastRun: string | null;
+  lastOk: boolean | null;
+}
+
+/** The signed-in browser's landing page: one bookmark, every card. */
+export function renderViewsIndexHtml(entries: readonly ViewIndexEntry[]): string {
+  const rows = entries
+    .map((entry) => {
+      const status =
+        entry.lastOk === null ? "never run" : entry.lastOk ? "ok" : "failing";
+      const refresh =
+        entry.intervalMs === null ? "on demand" : `every ${String(Math.round(entry.intervalMs / 60000))} min`;
+      return (
+        `<a class="row" href="/views/${esc(entry.id)}">` +
+        `<span class="t">${esc(entry.title)}</span>` +
+        `<span class="m">${esc(refresh)} · ${esc(status)}${entry.lastRun === null ? "" : ` · ${esc(entry.lastRun)}`}</span>` +
+        `</a>`
+      );
+    })
+    .join("");
+  const body =
+    entries.length === 0
+      ? `<p class="empty">No views pinned yet. Ask your agent to pin one — it compiles the card once, then this page serves it forever.</p>`
+      : rows;
+  return [
+    "<!doctype html><html><head><meta charset=\"utf-8\">",
+    `<meta name="viewport" content="width=device-width, initial-scale=1">`,
+    `<title>Views</title><style>${STYLE}`,
+    ".row{display:flex;flex-direction:column;gap:2px;padding:12px 4px;border-bottom:1px solid #f0f0f1;text-decoration:none;color:inherit}",
+    ".row:hover{background:#fafafa}",
+    ".t{font-weight:600}",
+    ".m{font-size:12px;color:#71717a}",
+    ".empty{color:#71717a;font-size:14px}",
+    "</style></head><body>",
+    `<div class="card"><h1>Views</h1>${body}</div>`,
+    "</body></html>",
+  ].join("");
+}
+
 function esc(value: string): string {
   return value
     .replaceAll("&", "&amp;")

@@ -19,7 +19,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import type { ServeConfig } from "../config.js";
 import { createGatewaySession, type CallIdentity, type GatewayCore } from "../gateway.js";
-import { renderCardHtml, renderCardJson } from "../views/render.js";
+import { renderCardHtml, renderCardJson, renderViewsIndexHtml } from "../views/render.js";
 import { BoundedEventStore } from "./event-store.js";
 import { SESSION_COOKIE, type GatewayOAuthProvider } from "./oauth/provider.js";
 import { SessionManager } from "./sessions.js";
@@ -267,7 +267,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   // .json for machines. A failed last run renders as an error card, not a 500.
   const views = core.views;
   if (views !== undefined) {
-    app.get("/views", viewsAuth, (_req: Request, res: Response) => {
+    app.get("/views", viewsAuth, (req: Request, res: Response) => {
       const list = views.list().map((spec) => {
         const snapshot = views.getSnapshot(spec.id);
         return {
@@ -280,6 +280,24 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
           lastOk: snapshot?.ok ?? null,
         };
       });
+      if ((req.headers.accept ?? "").includes("text/html")) {
+        res
+          .status(200)
+          .type("text/html; charset=utf-8")
+          .send(
+            renderViewsIndexHtml(
+              list.map((entry) => ({
+                id: entry.id,
+                title: entry.title,
+                sensitivity: entry.sensitivity,
+                intervalMs: entry.refresh.intervalMs,
+                lastRun: entry.lastRun,
+                lastOk: entry.lastOk,
+              })),
+            ),
+          );
+        return;
+      }
       res.status(200).json({ ok: true, data: { views: list } });
     });
     app.get("/views/:id", viewsAuth, async (req: Request, res: Response) => {
