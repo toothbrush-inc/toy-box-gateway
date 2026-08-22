@@ -19,7 +19,14 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import type { ServeConfig } from "../config.js";
 import { createGatewaySession, type CallIdentity, type GatewayCore } from "../gateway.js";
-import { renderCardHtml, renderCardJson, renderViewsIndexHtml } from "../views/render.js";
+import {
+  renderCardHtml,
+  renderCardJson,
+  renderNoticeHtml,
+  renderPreviewHtml,
+  renderPreviewJson,
+  renderViewsIndexHtml,
+} from "../views/render.js";
 import { BoundedEventStore } from "./event-store.js";
 import { SESSION_COOKIE, type GatewayOAuthProvider } from "./oauth/provider.js";
 import { SessionManager } from "./sessions.js";
@@ -292,6 +299,39 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
         return;
       }
       res.status(200).json({ ok: true, data: { views: list } });
+    });
+    // Previews: rendered once by preview_view, held at an unguessable token
+    // until they expire. Same auth as the pinned cards; never cached.
+    app.get("/views/preview/:token", viewsAuth, (req: Request, res: Response) => {
+      const raw = typeof req.params["token"] === "string" ? req.params["token"] : "";
+      const wantsJson = raw.endsWith(".json");
+      const token = wantsJson ? raw.slice(0, -".json".length) : raw;
+      const preview = views.getPreview(token);
+      res.setHeader("Cache-Control", "no-store");
+      if (preview === undefined) {
+        if (!wantsJson && (req.headers.accept ?? "").includes("text/html")) {
+          res
+            .status(404)
+            .type("text/html; charset=utf-8")
+            .send(
+              renderNoticeHtml(
+                "Preview expired",
+                "This preview is gone — previews live about ten minutes. Ask your agent to preview again, or to pin the view so it has a permanent page.",
+              ),
+            );
+          return;
+        }
+        res.status(404).json({
+          ok: false,
+          error: { code: "unknown_preview", message: "no such preview, or it expired — preview again" },
+        });
+        return;
+      }
+      if (wantsJson) {
+        res.status(200).json(renderPreviewJson(preview));
+      } else {
+        res.status(200).type("text/html; charset=utf-8").send(renderPreviewHtml(preview));
+      }
     });
     app.get("/views/:id", viewsAuth, async (req: Request, res: Response) => {
       // View ids are TOKEN (no dots), so a trailing ".json" is unambiguous.

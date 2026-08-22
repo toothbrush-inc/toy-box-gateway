@@ -4,7 +4,8 @@
 // Pages are fully self-contained — inline style, no scripts, no external
 // assets. Error snapshots render an error card, never a 500.
 
-import type { CardModel, CardSection, ViewSnapshot, ViewSpec } from "./model.js";
+import { viewPath, type CardModel, type CardSection, type ViewSnapshot, type ViewSpec } from "./model.js";
+import type { ViewPreview } from "./previews.js";
 import { renderSection } from "./sections.js";
 import { esc, formatInterval, formatTimestamp } from "./text.js";
 import { THEME_CSS } from "./theme.js";
@@ -37,6 +38,8 @@ export interface CardOptions {
   compact?: boolean;
   /** Heading level for the card title: h1 on its own page, h2 inside the index. */
   heading?: "h1" | "h2";
+  /** A preview render: dashed frame, nothing else changes. */
+  preview?: boolean;
 }
 
 /** One card. The snapshot may be missing (never run), failed, or ok. */
@@ -75,6 +78,9 @@ export function renderCard(spec: ViewSpec, snapshot: ViewSnapshot | undefined, o
   const classes = ["card"];
   if (status === "bad") {
     classes.push("card--error");
+  }
+  if (options.preview === true) {
+    classes.push("card--preview");
   }
   const style = options.index === undefined ? "" : ` style="--i:${String(options.index)}"`;
   const article =
@@ -162,9 +168,40 @@ function page(title: string, body: string, pageClass: string): string {
   );
 }
 
+const INDEX_NAV = `<a href="/views">← All views</a>`;
+
 export function renderCardHtml(spec: ViewSpec, snapshot: ViewSnapshot): string {
-  const nav = `<nav class="top"><a href="/views">← All views</a><span class="id">${esc(spec.id)}</span></nav>`;
+  const nav = `<nav class="top">${INDEX_NAV}<span class="id">${esc(spec.id)}</span></nav>`;
   return page(spec.title, nav + renderCard(spec, snapshot, { heading: "h1" }), "page--single");
+}
+
+/** The look-before-you-pin page: the same card in a dashed frame, with a
+ * notice saying it is not pinned and when it expires. */
+export function renderPreviewHtml(preview: ViewPreview): string {
+  const { spec, snapshot } = preview;
+  const nav = `<nav class="top">${INDEX_NAV}<span class="id">preview · ${esc(spec.id)}</span></nav>`;
+  const notice =
+    `<p class="notice"><strong>Preview</strong> — not pinned: nothing refreshes and no grants were written. ` +
+    `Expires ${esc(formatTimestamp(preview.expiresAt))}. Like it? Tell your agent to pin it.</p>`;
+  return page(
+    `Preview · ${spec.title}`,
+    nav + notice + renderCard(spec, snapshot, { heading: "h1", preview: true }),
+    "page--single",
+  );
+}
+
+export function renderPreviewJson(preview: ViewPreview): Record<string, unknown> {
+  return {
+    ...renderCardJson(preview.spec, preview.snapshot),
+    preview: { token: preview.token, createdAt: preview.createdAt, expiresAt: preview.expiresAt },
+  };
+}
+
+/** A plain message page in the same dress (expired preview, and the like). */
+export function renderNoticeHtml(title: string, message: string): string {
+  const nav = `<nav class="top">${INDEX_NAV}</nav>`;
+  const body = `<header class="masthead"><h1>${esc(title)}</h1></header><p class="empty">${esc(message)}</p>`;
+  return page(title, nav + body, "page--single");
 }
 
 export interface ViewIndexEntry {
@@ -186,7 +223,7 @@ export function renderViewsIndexHtml(entries: readonly ViewIndexEntry[]): string
       : `<section class="grid">${entries
           .map((entry, index) =>
             renderCard(entry.spec, entry.snapshot, {
-              href: `/views/${entry.spec.id}`,
+              href: viewPath(entry.spec.id),
               index,
               compact: true,
               heading: "h2",

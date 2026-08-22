@@ -68,7 +68,10 @@ export { redactErrorMessage } from "./redact.js";
 export {
   CardModelSchema,
   CardSectionSchema,
+  previewCapabilityId,
+  previewPath,
   viewCapabilityId,
+  viewPath,
   ViewSpecInputSchema,
   ViewSpecSchema,
   viewUri,
@@ -79,11 +82,20 @@ export {
   type ViewSpec,
   type ViewSpecInput,
 } from "./views/model.js";
-export { renderCardHtml, renderCardJson } from "./views/render.js";
+export { PreviewStore, type PreviewStoreOptions, type ViewPreview } from "./views/previews.js";
+export {
+  renderCardHtml,
+  renderCardJson,
+  renderNoticeHtml,
+  renderPreviewHtml,
+  renderPreviewJson,
+  renderViewsIndexHtml,
+} from "./views/render.js";
 export { runTransform, TransformError, type TransformErrorKind } from "./views/sandbox.js";
 export {
   ViewsService,
   type PinResult,
+  type PreviewResult,
   type ViewNotifier,
   type ViewsServiceOptions,
 } from "./views/service.js";

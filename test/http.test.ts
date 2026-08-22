@@ -45,6 +45,7 @@ async function startHarness(): Promise<HttpHarness> {
   const config: GatewayConfig = {
     ...GatewayConfigSchema.parse({
       capabilities: [{ id: "weather", command: "unused", manifestPath }],
+      views: { dir: join(dir, "views") },
       serve: {
         port: 0,
         host: "127.0.0.1",
@@ -244,6 +245,50 @@ describe("http views surface", () => {
 
     const missing = await fetch(`${harness.url}/views/nope`, { headers });
     expect(missing.status).toBe(404);
+  });
+
+  it("serves previews at their token until they expire", async () => {
+    const harness = await startHarness();
+    const views = harness.core.views;
+    expect(views).toBeDefined();
+    const previewed = await views?.preview(CARD_VIEW);
+    expect(previewed?.ok).toBe(true);
+    const token = previewed?.ok === true ? previewed.preview.token : "";
+    expect(views?.previewUrlFor(token)).toBe(`http://127.0.0.1/views/preview/${token}`);
+    expect(views?.urlFor("morning")).toBe("http://127.0.0.1/views/morning");
+
+    const unauthorized = await fetch(`${harness.url}/views/preview/${token}`);
+    expect(unauthorized.status).toBe(401);
+
+    const headers = { Authorization: "Bearer secret-token-1" };
+    const html = await fetch(`${harness.url}/views/preview/${token}`, { headers });
+    expect(html.status).toBe(200);
+    expect(html.headers.get("content-type")).toContain("text/html");
+    expect(html.headers.get("cache-control")).toBe("no-store");
+    const page = await html.text();
+    expect(page).toContain("<strong>Preview</strong>");
+    expect(page).toContain("hey &lt;world&gt;");
+    expect(page).not.toContain("<script");
+
+    const json = await fetch(`${harness.url}/views/preview/${token}.json`, { headers });
+    expect(json.status).toBe(200);
+    const card = (await json.json()) as { ok: boolean; model: { title: string }; preview: { token: string } };
+    expect(card.ok).toBe(true);
+    expect(card.model.title).toBe("Morning");
+    expect(card.preview.token).toBe(token);
+
+    // nothing was pinned
+    const list = await fetch(`${harness.url}/views`, { headers });
+    expect(((await list.json()) as { data: { views: unknown[] } }).data.views).toHaveLength(0);
+
+    const gone = await fetch(`${harness.url}/views/preview/nope`, { headers });
+    expect(gone.status).toBe(404);
+    expect(((await gone.json()) as { error: { code: string } }).error.code).toBe("unknown_preview");
+    const goneHtml = await fetch(`${harness.url}/views/preview/nope`, {
+      headers: { ...headers, Accept: "text/html" },
+    });
+    expect(goneHtml.status).toBe(404);
+    expect(await goneHtml.text()).toContain("Preview expired");
   });
 });
 

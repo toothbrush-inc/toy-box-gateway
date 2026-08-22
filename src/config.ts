@@ -51,8 +51,16 @@ export const GatewayConfigSchema = z.object({
       maxViews: z.number().int().positive().max(200).default(50),
       queryTimeoutMs: z.number().int().positive().default(30_000),
       transformTimeoutMs: z.number().int().positive().max(10_000).default(1_000),
+      /** How long a preview_view render stays at its URL. */
+      previewTtlMs: z.number().int().min(1_000).max(3_600_000).default(600_000),
     })
-    .default({ enabled: true, maxViews: 50, queryTimeoutMs: 30_000, transformTimeoutMs: 1_000 }),
+    .default({
+      enabled: true,
+      maxViews: 50,
+      queryTimeoutMs: 30_000,
+      transformTimeoutMs: 1_000,
+      previewTtlMs: 600_000,
+    }),
   oauth: z
     .object({
       google: z

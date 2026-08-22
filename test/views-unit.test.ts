@@ -12,7 +12,14 @@ import {
   ViewSpecSchema,
   type ViewSpec,
 } from "../src/views/model.js";
-import { renderCardHtml, renderCardJson } from "../src/views/render.js";
+import { PreviewStore } from "../src/views/previews.js";
+import {
+  renderCardHtml,
+  renderCardJson,
+  renderNoticeHtml,
+  renderPreviewHtml,
+  renderPreviewJson,
+} from "../src/views/render.js";
 import { runTransform, TransformError } from "../src/views/sandbox.js";
 import { ViewStore } from "../src/views/store.js";
 
@@ -330,5 +337,78 @@ describe("executor", () => {
     );
     expect(badModel.ok).toBe(false);
     expect(badModel.error?.kind).toBe("model");
+  });
+});
+
+describe("previews", () => {
+  const spec: ViewSpec = ViewSpecSchema.parse({
+    id: "draft",
+    title: "Draft card",
+    owner: "dvd",
+    sensitivity: "private",
+    queries: [{ key: "a", tool: "weather__echo", arguments: {} }],
+    transform: "(input) => input",
+    refresh: { intervalMs: 60_000 },
+    createdAt: "2026-08-21T10:00:00.000Z",
+    updatedAt: "2026-08-21T10:00:00.000Z",
+  });
+  const snapshot = {
+    viewId: "draft",
+    ok: true,
+    model: { title: "Draft", sections: [{ kind: "text" as const, text: "hello <there>" }] },
+    startedAt: "2026-08-21T10:00:01.000Z",
+    durationMs: 12,
+  };
+
+  it("holds previews at unguessable tokens until they expire, evicting the oldest past the cap", () => {
+    let now = Date.parse("2026-08-21T10:00:00.000Z");
+    const store = new PreviewStore({ ttlMs: 1_000, max: 2, now: () => now });
+    const first = store.put(spec, snapshot);
+    expect(first.token).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(first.expiresAt).toBe("2026-08-21T10:00:01.000Z");
+    expect(store.get(first.token)?.spec.id).toBe("draft");
+    expect(store.get("nope")).toBeUndefined();
+
+    const second = store.put(spec, snapshot);
+    expect(second.token).not.toBe(first.token);
+    const third = store.put(spec, snapshot);
+    expect(store.get(first.token)).toBeUndefined(); // evicted: cap is 2
+    expect(store.get(second.token)).toBeDefined();
+    expect(store.size).toBe(2);
+
+    now += 1_000; // at the boundary previews are gone
+    expect(store.get(third.token)).toBeUndefined();
+    expect(store.size).toBe(0);
+  });
+
+  it("renders the preview page as the same card in a dashed frame with a notice", () => {
+    const preview = {
+      token: "tok_preview",
+      spec,
+      snapshot,
+      createdAt: "2026-08-21T10:00:01.000Z",
+      expiresAt: "2026-08-21T10:10:01.000Z",
+    };
+    const html = renderPreviewHtml(preview);
+    expect(html).toBe(renderPreviewHtml(preview));
+    expect(html).toContain('class="card card--preview"');
+    expect(html).toContain("<strong>Preview</strong> — not pinned");
+    expect(html).toContain("Expires Aug 21, 10:10 UTC");
+    expect(html).toContain("preview · draft");
+    expect(html).toContain("hello &lt;there&gt;");
+    expect(html).not.toContain("<script");
+    expect(html).not.toContain("tok_preview"); // the token stays in the URL, not the page
+
+    const json = renderPreviewJson(preview);
+    expect(json["preview"]).toEqual({
+      token: "tok_preview",
+      createdAt: "2026-08-21T10:00:01.000Z",
+      expiresAt: "2026-08-21T10:10:01.000Z",
+    });
+    expect((json["model"] as { title: string }).title).toBe("Draft");
+
+    const notice = renderNoticeHtml("Preview expired", "Gone <now>.");
+    expect(notice).toContain("<h1>Preview expired</h1>");
+    expect(notice).toContain("Gone &lt;now&gt;.");
   });
 });

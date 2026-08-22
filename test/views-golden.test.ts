@@ -5,8 +5,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { renderCardHtml, renderViewsIndexHtml } from "../src/views/render.js";
-import { ALL_FIXTURES } from "./fixtures/cards.js";
+import { renderCardHtml, renderPreviewHtml, renderViewsIndexHtml } from "../src/views/render.js";
+import { ALL_FIXTURES, weeklyFitness } from "./fixtures/cards.js";
 
 describe("golden cards", () => {
   for (const fixture of ALL_FIXTURES) {
@@ -20,6 +20,21 @@ describe("golden cards", () => {
       await expect(html).toMatchFileSnapshot(`./__golden__/${fixture.spec.id}.html`);
     });
   }
+
+  it("renders a preview page byte-for-byte", async () => {
+    const preview = {
+      token: "golden-preview-token",
+      spec: weeklyFitness.spec,
+      snapshot: weeklyFitness.snapshot!,
+      createdAt: "2026-08-21T15:42:07.000Z",
+      expiresAt: "2026-08-21T15:52:07.000Z",
+    };
+    const html = renderPreviewHtml(preview);
+    expect(html).toBe(renderPreviewHtml(preview));
+    expect(html).not.toContain("<script");
+    expect(html).toContain("card--preview");
+    await expect(html).toMatchFileSnapshot("./__golden__/preview.html");
+  });
 
   it("renders the index grid byte-for-byte", async () => {
     const html = renderViewsIndexHtml(ALL_FIXTURES);

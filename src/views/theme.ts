@@ -50,6 +50,9 @@ a{color:inherit}
 .card-link .card{transition:transform .25s ease,box-shadow .25s ease}
 .card-link:hover .card{transform:translateY(-2px);box-shadow:var(--shadow-hover)}
 .card--error{border-left:3px solid var(--bad-mark)}
+.card--preview{border-style:dashed}
+.notice{margin:0 0 16px;padding:10px 14px;border:1px dashed var(--ring);border-radius:10px;font-size:13px;line-height:1.45;color:var(--muted)}
+.notice strong{color:var(--ink);font-weight:600}
 .card-head{margin-bottom:16px}
 .kicker{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .kicker .name{color:var(--ink-2);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

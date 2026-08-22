@@ -1,7 +1,8 @@
 // Executes one view: bound queries through the peer-call enforcement path
-// (per-tool grants as consumer `view-<id>`, producer policy via callPeer),
-// then the sandboxed transform, then CardModel validation. Every query is
-// audited like a /call row; snapshots carry per-query provenance.
+// (per-tool grants as consumer `view-<id>` — or `preview-<id>` for a
+// preview — producer policy via callPeer), then the sandboxed transform, then
+// CardModel validation. Every query is audited like a /call row; snapshots
+// carry per-query provenance.
 
 import type { AuditWriter } from "../audit.js";
 import type { PeerToolResult } from "../egress.js";
@@ -33,6 +34,9 @@ export interface ExecutorDeps {
 export interface ExecutorOptions {
   queryTimeoutMs: number;
   transformTimeoutMs: number;
+  /** Identity to run as — passed to checkGrant and stamped on audit rows.
+   * Defaults to the view's grant-consumer id `view-<id>`. */
+  consumer?: string;
 }
 
 export async function executeView(
@@ -42,7 +46,7 @@ export async function executeView(
 ): Promise<ViewSnapshot> {
   const startedAt = new Date().toISOString();
   const startedMs = Date.now();
-  const viewCap = viewCapabilityId(spec.id);
+  const viewCap = options.consumer ?? viewCapabilityId(spec.id);
   const input: Record<string, unknown> = {};
   const provenance: QueryProvenance[] = [];
 

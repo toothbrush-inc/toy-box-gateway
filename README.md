@@ -185,9 +185,17 @@ transform `(input) => CardModel` the agent writes once + a refresh policy.
 **Serving is deterministic — no LLM in the path**: identical output every
 render, milliseconds, zero tokens.
 
+- **Preview before pin.** `preview_view` takes the same input as `pin_view`,
+  runs it once, and returns the card JSON plus a short-lived URL
+  (`/views/preview/<token>`, ~10 min, same sign-in as `/views`) the person
+  opens on their phone while the agent tunes the transform. Nothing persists —
+  no grants, no refresh, no entry in the index; the run is audited as
+  `preview-<id>`. A failed run still gets a URL (the error card) plus the
+  structured errors. When it looks right, `pin_view` with the identical view.
 - **Pin = compile + prove.** `pin_view` dry-runs end to end and refuses on any
   failure (nothing persists); the refusal carries the transform/query errors
-  so the agent iterates in conversation. A view that exists has rendered.
+  so the agent iterates in conversation. A view that exists has rendered, and
+  the pin result carries its URL.
 - **Views ride the peer-call machinery.** Each view is grant-consumer
   `view-<id>`: pinning writes the per-tool grants (the pin IS the consent),
   unpinning revokes them, and mid-session revocation degrades the card to an
@@ -214,10 +222,11 @@ render, milliseconds, zero tokens.
 - **Surfaces.** MCP resources `view://<id>` (list/read/subscribe — agents see
   your cards too) and, in serve mode, bearer-authed `GET /views` (a browser
   gets the card grid — every view at a glance; API clients get JSON),
-  `GET /views/<id>` (self-contained HTML, no scripts) and `GET /views/<id>.json`.
-- Meta tools: `pin_view`, `run_view`, `list_views`, `unpin_view`. Config block
-  `views` (default-enabled): `{enabled, dir, maxViews, queryTimeoutMs,
-  transformTimeoutMs}`.
+  `GET /views/<id>` (self-contained HTML, no scripts), `GET /views/<id>.json`,
+  and `GET /views/preview/<token>[.json]` for live previews.
+- Meta tools: `preview_view`, `pin_view`, `run_view`, `list_views`,
+  `unpin_view`. Config block `views` (default-enabled): `{enabled, dir,
+  maxViews, queryTimeoutMs, transformTimeoutMs, previewTtlMs}`.
 
 ## Future (not built)
 

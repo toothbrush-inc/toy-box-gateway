@@ -145,6 +145,59 @@ describe("views through the gateway", () => {
     expect((((await callJson(harness, "list_views", {}))["data"]) as { views: unknown[] }).views).toHaveLength(0);
   });
 
+  it("previews render without pinning: no grants, no registry entry, audited as preview-<id>", async () => {
+    const harness = await startHarness();
+    const names = (await harness.client.listTools()).tools.map((tool) => tool.name);
+    expect(names).toContain("preview_view");
+
+    const previewed = await callJson(harness, "preview_view", { view: GOOD_VIEW });
+    expect(previewed["ok"]).toBe(true);
+    const data = previewed["data"] as {
+      preview: { token: string; expiresAt: string; url?: string };
+      card: { ok: boolean; model: { title: string }; provenance: { capability: string }[] };
+    };
+    expect(data.card.ok).toBe(true);
+    expect(data.card.model.title).toBe("Morning");
+    expect(data.card.provenance[0]?.capability).toBe("weather");
+    expect(data.preview.token).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(Date.parse(data.preview.expiresAt)).toBeGreaterThan(Date.now());
+    expect(data.preview.url).toBeUndefined(); // stdio: no serve surface, no URL
+
+    // nothing persisted: no view, no grants for the view or the preview
+    expect((((await callJson(harness, "list_views", {}))["data"]) as { views: unknown[] }).views).toHaveLength(0);
+    expect(openVault({ env: harness.env }).listGrants("view-morning")).toHaveLength(0);
+    expect(openVault({ env: harness.env }).listGrants("preview-morning")).toHaveLength(0);
+    await expect(harness.client.readResource({ uri: "view://morning" })).rejects.toThrow(/not found/);
+
+    // the query is audited like a /call row, attributed to the preview identity
+    expect(audits(harness).find((row) => row.tool === "call:weather__echo")).toMatchObject({
+      capability: "preview-morning",
+      outcome: "ok",
+      user: "dvd",
+      target: "weather",
+    });
+
+    // a broken transform still yields a preview (the error card) plus the errors
+    const broken = await callJson(harness, "preview_view", {
+      view: { ...GOOD_VIEW, transform: "(input) => { throw new Error('nope'); }" },
+    });
+    expect(broken["ok"]).toBe(false);
+    expect((broken["error"] as { code: string }).code).toBe("preview_failed");
+    expect((broken["detail"] as { kind: string }).kind).toBe("transform");
+    expect((broken["preview"] as { token: string }).token).toMatch(/^[A-Za-z0-9_-]{22}$/);
+
+    // the same refusals as pin, before anything runs
+    const notQuery = await callJson(harness, "preview_view", {
+      view: { ...GOOD_VIEW, queries: [{ key: "b", tool: "weather__boom" }] },
+    });
+    expect((notQuery["error"] as { code: string }).code).toBe("not_query_tool");
+    expect(notQuery["preview"]).toBeUndefined();
+
+    // and the identical input pins
+    const pinned = await callJson(harness, "pin_view", { view: GOOD_VIEW });
+    expect(pinned["ok"]).toBe(true);
+  });
+
   it("refuses bad pins with no residue: non-query tools, unknown producers, broken transforms", async () => {
     const harness = await startHarness();
 

@@ -204,3 +204,17 @@ export function viewUri(id: string): string {
 export function viewCapabilityId(id: string): string {
   return `view-${id}`;
 }
+
+/** The identity a preview runs as: audited distinctly from the pinned view, never granted. */
+export function previewCapabilityId(id: string): string {
+  return `preview-${id}`;
+}
+
+/** Browser paths on the serve surface (the HTTP routes mirror these). */
+export function viewPath(id: string): string {
+  return `/views/${id}`;
+}
+
+export function previewPath(token: string): string {
+  return `/views/preview/${token}`;
+}

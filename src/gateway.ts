@@ -53,6 +53,7 @@ import { ViewsService } from "./views/service.js";
 import {
   LIST_VIEWS_TOOL,
   PIN_VIEW_TOOL,
+  PREVIEW_VIEW_TOOL,
   RUN_VIEW_TOOL,
   UNPIN_VIEW_TOOL,
 } from "./views/tools.js";
@@ -337,6 +338,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
       versionOf: (capabilityId) => versionByCapability.get(capabilityId) ?? null,
       queryToolsOf: (capabilityId) => egressSpecs.get(capabilityId)?.queryTools,
       isConfigured: (capabilityId) => specs.has(capabilityId),
+      ...(config.serve === undefined ? {} : { publicUrl: config.serve.publicUrl }),
       notify: {
         resourceListChanged: () => {
           for (const session of sessions) {
@@ -423,7 +425,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
       GATEWAY_REVOKE_GRANT_TOOL,
       ...(views === undefined
         ? []
-        : [PIN_VIEW_TOOL, RUN_VIEW_TOOL, LIST_VIEWS_TOOL, UNPIN_VIEW_TOOL]),
+        : [PREVIEW_VIEW_TOOL, PIN_VIEW_TOOL, RUN_VIEW_TOOL, LIST_VIEWS_TOOL, UNPIN_VIEW_TOOL]),
     ],
     attachSession: (session) => sessions.add(session),
     detachSession: (session) => sessions.delete(session),
@@ -642,6 +644,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
       }
 
       if (
+        name === PREVIEW_VIEW_TOOL.name ||
         name === PIN_VIEW_TOOL.name ||
         name === RUN_VIEW_TOOL.name ||
         name === LIST_VIEWS_TOOL.name ||
@@ -657,6 +660,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
         if (name === LIST_VIEWS_TOOL.name) {
           const list = viewsService.list().map((spec) => {
             const snapshot = viewsService.getSnapshot(spec.id);
+            const url = viewsService.urlFor(spec.id);
             return {
               id: spec.id,
               title: spec.title,
@@ -665,10 +669,55 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
               updatedAt: spec.updatedAt,
               lastRun: snapshot?.startedAt ?? null,
               lastOk: snapshot?.ok ?? null,
+              ...(url === undefined ? {} : { url }),
             };
           });
           record({ capability: "gateway", tool: name, outcome: "ok" });
           return jsonResult({ ok: true, data: { views: list } });
+        }
+
+        if (name === PREVIEW_VIEW_TOOL.name) {
+          const result = await viewsService.preview(args["view"]);
+          if (!result.ok) {
+            record({ capability: "gateway", tool: name, outcome: "error", error_code: result.code });
+            return errorResult(result.code, result.message);
+          }
+          const { preview } = result;
+          const url = viewsService.previewUrlFor(preview.token);
+          const handle = {
+            token: preview.token,
+            ...(url === undefined ? {} : { url }),
+            expiresAt: preview.expiresAt,
+          };
+          if (!preview.snapshot.ok) {
+            record({
+              capability: "gateway",
+              tool: name,
+              outcome: "error",
+              error_code: "preview_failed",
+              fields: [preview.spec.id],
+            });
+            const payload = {
+              ok: false,
+              error: {
+                code: "preview_failed",
+                message: "the view's dry run failed; nothing was pinned — fix and preview again",
+              },
+              ...(preview.snapshot.error === undefined ? {} : { detail: preview.snapshot.error }),
+              ...(preview.snapshot.queryErrors === undefined ? {} : { queryErrors: preview.snapshot.queryErrors }),
+              preview: handle,
+            };
+            return {
+              content: [{ type: "text", text: JSON.stringify(payload) }],
+              structuredContent: payload,
+              isError: true,
+            };
+          }
+          record({ capability: "gateway", tool: name, outcome: "ok", fields: [preview.spec.id] });
+          return jsonResult({
+            ok: true,
+            data: { preview: handle, card: renderCardJson(preview.spec, preview.snapshot) },
+          });
         }
 
         if (name === PIN_VIEW_TOOL.name) {
@@ -688,6 +737,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
             };
           }
           record({ capability: "gateway", tool: name, outcome: "ok", fields: [result.spec.id] });
+          const pinnedUrl = viewsService.urlFor(result.spec.id);
           const payload = {
             ok: true,
             data: {
@@ -697,6 +747,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
                 sensitivity: result.spec.sensitivity,
                 refresh: result.spec.refresh,
                 updatedAt: result.spec.updatedAt,
+                ...(pinnedUrl === undefined ? {} : { url: pinnedUrl }),
               },
               snapshot: result.snapshot,
             },
@@ -873,7 +924,8 @@ export function createGatewaySession(core: GatewayCore, identity: CallIdentity =
         (views === undefined
           ? ""
           : " Pinned views are served as view://<id> resources; author them with " +
-            "pin_view (dry-run proves before persisting), then run_view/list_views/unpin_view."),
+            "preview_view (renders to a short-lived URL, persists nothing) and pin_view " +
+            "(dry-run proves before persisting), then run_view/list_views/unpin_view."),
     },
   );
 

@@ -1,6 +1,6 @@
 {
   "name": "@local/capability-gateway",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "private": false,
   "description": "Local capability gateway: mounts capability MCP servers, enforces grants and tool policy, audits calls",
   "type": "module",

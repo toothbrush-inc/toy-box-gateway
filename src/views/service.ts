@@ -1,22 +1,31 @@
 // The views orchestrator: pin = compile + prove (dry-run before persist),
+// preview = compile + prove, persist nothing (a short-lived URL instead),
 // refresh = scheduler + refresh-on-read backstop, serve = snapshots only.
-// Each view consumes producers as grant-consumer `view-<id>` through the
-// peer-call machinery; pinning writes the grants (the pin IS the consent),
-// unpinning revokes them.
+// Each pinned view consumes producers as grant-consumer `view-<id>` through
+// the peer-call machinery; pinning writes the grants (the pin IS the
+// consent), unpinning revokes them. A preview runs once as `preview-<id>`
+// under an in-memory allow-set derived from the very spec it was asked to
+// render (the same declared-query-tool check a pin passes) — the
+// authenticated call is the consent and there is nothing to revoke after.
 
 import { openVault, type GrantRecord } from "@local/vault";
 
 import type { AuditWriter } from "../audit.js";
 import type { ViewsConfig } from "../config.js";
 import { parsePrefixedName } from "../registry.js";
-import { executeView, type CallPeerFn } from "./executor.js";
+import { executeView, type CallPeerFn, type ExecutorDeps } from "./executor.js";
 import {
+  previewCapabilityId,
+  previewPath,
   viewCapabilityId,
+  viewPath,
   ViewSpecInputSchema,
   viewUri,
   type ViewSnapshot,
   type ViewSpec,
+  type ViewSpecInput,
 } from "./model.js";
+import { PreviewStore, type ViewPreview } from "./previews.js";
 import { renderCardJson } from "./render.js";
 import { ViewScheduler } from "./scheduler.js";
 import { ViewStore } from "./store.js";
@@ -45,6 +54,22 @@ export type PinResult =
       queryErrors?: ViewSnapshot["queryErrors"];
     };
 
+/** A preview either compiles and runs (the snapshot may still be a failed
+ * render — that is what the preview shows) or is refused before running. */
+export type PreviewResult =
+  | { ok: true; preview: ViewPreview }
+  | { ok: false; code: string; message: string };
+
+type CompileResult =
+  | { ok: true; spec: ViewSpecInput; toolsByProducer: Map<string, Set<string>> }
+  | { ok: false; code: string; message: string };
+
+type ExecutionMode =
+  | { kind: "pinned" }
+  | { kind: "preview"; allowed: ReadonlyMap<string, ReadonlySet<string>> };
+
+const MAX_LIVE_PREVIEWS = 32;
+
 export interface ViewsServiceOptions {
   dir: string;
   config: ViewsConfig;
@@ -57,18 +82,24 @@ export interface ViewsServiceOptions {
   isConfigured: (producerId: string) => boolean;
   notify: ViewNotifier;
   log: (line: string) => void;
+  /** The serve surface's public origin; when set, tool results carry browser URLs. */
+  publicUrl?: string;
 }
 
 export class ViewsService {
   private readonly store: ViewStore;
+  private readonly previews: PreviewStore;
   private readonly scheduler: ViewScheduler;
   private readonly inflight = new Map<string, Promise<ViewSnapshot>>();
+  private readonly publicUrl: string | undefined;
 
   constructor(private readonly options: ViewsServiceOptions) {
     this.store = new ViewStore(options.dir, options.log);
+    this.previews = new PreviewStore({ ttlMs: options.config.previewTtlMs, max: MAX_LIVE_PREVIEWS });
     this.scheduler = new ViewScheduler(async (id) => {
       await this.run(id, { force: true });
     }, options.log);
+    this.publicUrl = options.publicUrl?.replace(/\/+$/u, "");
   }
 
   init(): void {
@@ -91,16 +122,22 @@ export class ViewsService {
     return this.store.getSnapshot(id);
   }
 
+  /** Browser URL of a pinned view (undefined when not serving HTTP). */
+  urlFor(id: string): string | undefined {
+    return this.publicUrl === undefined ? undefined : `${this.publicUrl}${viewPath(id)}`;
+  }
+
+  /** Browser URL of a live preview (undefined when not serving HTTP). */
+  previewUrlFor(token: string): string | undefined {
+    return this.publicUrl === undefined ? undefined : `${this.publicUrl}${previewPath(token)}`;
+  }
+
   async pin(input: unknown): Promise<PinResult> {
-    const parsed = ViewSpecInputSchema.safeParse(input);
-    if (!parsed.success) {
-      const issues = parsed.error.issues
-        .slice(0, 3)
-        .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-        .join("; ");
-      return { ok: false, code: "invalid_view", message: issues };
+    const compiled = this.compile(input);
+    if (!compiled.ok) {
+      return compiled;
     }
-    const spec = parsed.data;
+    const { spec, toolsByProducer } = compiled;
     const existing = this.store.get(spec.id);
     if (existing === undefined && this.store.list().length >= this.options.config.maxViews) {
       return {
@@ -108,37 +145,6 @@ export class ViewsService {
         code: "too_many_views",
         message: `the gateway caps pinned views at ${String(this.options.config.maxViews)}; unpin one first`,
       };
-    }
-
-    // Every bound tool must be a configured producer's declared QUERY tool —
-    // a glance must never fire a mutation.
-    const toolsByProducer = new Map<string, Set<string>>();
-    for (const query of spec.queries) {
-      const name = parsePrefixedName(query.tool);
-      if (name === null) {
-        return { ok: false, code: "invalid_view", message: `query '${query.key}': bad tool name` };
-      }
-      const { capabilityId: producer, toolName } = name;
-      if (!this.options.isConfigured(producer)) {
-        return {
-          ok: false,
-          code: "unknown_capability",
-          message: `query '${query.key}' targets '${producer}', which is not a configured capability`,
-        };
-      }
-      const queryTools = this.options.queryToolsOf(producer) ?? [];
-      if (!queryTools.includes(toolName)) {
-        return {
-          ok: false,
-          code: "not_query_tool",
-          message:
-            `query '${query.key}': '${toolName}' is not in '${producer}''s manifest tools.query — ` +
-            "views bind only annotated side-effect-free query tools",
-        };
-      }
-      const set = toolsByProducer.get(producer) ?? new Set<string>();
-      set.add(toolName);
-      toolsByProducer.set(producer, set);
     }
 
     // Grants: the pin is the consent act. Swap old grants for new; restore on
@@ -157,13 +163,8 @@ export class ViewsService {
       });
     }
 
-    const now = new Date().toISOString();
-    const full: ViewSpec = {
-      ...spec,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    };
-    const snapshot = await this.execute(full);
+    const full = this.stamp(spec, existing);
+    const snapshot = await this.execute(full, { kind: "pinned" });
     if (!snapshot.ok) {
       for (const [producer] of toolsByProducer) {
         vault.revokeGrant(viewCap, `capability:${producer}`);
@@ -196,6 +197,23 @@ export class ViewsService {
     return { ok: true, spec: full, snapshot };
   }
 
+  /** Compile + run once, persist nothing: the result lives at a token for
+   * `previewTtlMs`. The same input pins unchanged. */
+  async preview(input: unknown): Promise<PreviewResult> {
+    const compiled = this.compile(input);
+    if (!compiled.ok) {
+      return compiled;
+    }
+    const full = this.stamp(compiled.spec, this.store.get(compiled.spec.id));
+    const snapshot = await this.execute(full, { kind: "preview", allowed: compiled.toolsByProducer });
+    return { ok: true, preview: this.previews.put(full, snapshot) };
+  }
+
+  /** A live preview by token (undefined once expired or never issued). */
+  getPreview(token: string): ViewPreview | undefined {
+    return this.previews.get(token);
+  }
+
   unpin(id: string): boolean {
     this.scheduler.stop(id);
     const existed = this.store.delete(id);
@@ -223,7 +241,7 @@ export class ViewsService {
     if (running !== undefined) {
       return running;
     }
-    const promise = this.execute(spec)
+    const promise = this.execute(spec, { kind: "pinned" })
       .then((snapshot) => {
         this.store.putSnapshot(snapshot);
         this.options.notify.resourceUpdated(viewUri(id));
@@ -288,18 +306,72 @@ export class ViewsService {
 
   close(): void {
     this.scheduler.stopAll();
+    this.previews.clear();
   }
 
-  private execute(spec: ViewSpec): Promise<ViewSnapshot> {
+  /** Parse the input and prove every bound tool is a configured producer's
+   * declared QUERY tool — a glance must never fire a mutation. Shared by pin
+   * and preview so a preview that passes is a pin that passes. */
+  private compile(input: unknown): CompileResult {
+    const parsed = ViewSpecInputSchema.safeParse(input);
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .slice(0, 3)
+        .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+        .join("; ");
+      return { ok: false, code: "invalid_view", message: issues };
+    }
+    const spec = parsed.data;
+    const toolsByProducer = new Map<string, Set<string>>();
+    for (const query of spec.queries) {
+      const name = parsePrefixedName(query.tool);
+      if (name === null) {
+        return { ok: false, code: "invalid_view", message: `query '${query.key}': bad tool name` };
+      }
+      const { capabilityId: producer, toolName } = name;
+      if (!this.options.isConfigured(producer)) {
+        return {
+          ok: false,
+          code: "unknown_capability",
+          message: `query '${query.key}' targets '${producer}', which is not a configured capability`,
+        };
+      }
+      const queryTools = this.options.queryToolsOf(producer) ?? [];
+      if (!queryTools.includes(toolName)) {
+        return {
+          ok: false,
+          code: "not_query_tool",
+          message:
+            `query '${query.key}': '${toolName}' is not in '${producer}''s manifest tools.query — ` +
+            "views bind only annotated side-effect-free query tools",
+        };
+      }
+      const set = toolsByProducer.get(producer) ?? new Set<string>();
+      set.add(toolName);
+      toolsByProducer.set(producer, set);
+    }
+    return { ok: true, spec, toolsByProducer };
+  }
+
+  private stamp(spec: ViewSpecInput, existing: ViewSpec | undefined): ViewSpec {
+    const now = new Date().toISOString();
+    return { ...spec, createdAt: existing?.createdAt ?? now, updatedAt: now };
+  }
+
+  private execute(spec: ViewSpec, mode: ExecutionMode): Promise<ViewSnapshot> {
+    const checkGrant: ExecutorDeps["checkGrant"] =
+      mode.kind === "pinned"
+        ? (viewCapability, producer, tool) =>
+            openVault({ env: this.options.env, grantMode: "explicit" }).checkGrant({
+              capability: viewCapability,
+              connectionId: `capability:${producer}`,
+              action: tool,
+            })
+        : (_consumer, producer, tool) => mode.allowed.get(producer)?.has(tool) === true;
     return executeView(
       spec,
       {
-        checkGrant: (viewCapability, producer, tool) =>
-          openVault({ env: this.options.env, grantMode: "explicit" }).checkGrant({
-            capability: viewCapability,
-            connectionId: `capability:${producer}`,
-            action: tool,
-          }),
+        checkGrant,
         callPeer: this.options.callPeer,
         versionOf: this.options.versionOf,
         audit: this.options.audit,
@@ -307,6 +379,7 @@ export class ViewsService {
       {
         queryTimeoutMs: this.options.config.queryTimeoutMs,
         transformTimeoutMs: this.options.config.transformTimeoutMs,
+        ...(mode.kind === "preview" ? { consumer: previewCapabilityId(spec.id) } : {}),
       },
     );
   }
