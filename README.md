@@ -199,11 +199,21 @@ render, milliseconds, zero tokens.
 - **Transform sandbox.** `node:vm`, only `JSON` and `Math` in scope, 1s
   budget, sync-only; a cooperative local boundary (hosted upgrades to
   isolates). The bounded CardModel (stats / keyValues / list / table / text /
-  spark, with hard size caps) keeps cards card-sized.
+  spark / bars / progress, with hard size caps) keeps cards card-sized.
+- **The model says what the data means; the gateway owns the look.** A
+  transform never writes markup or CSS — it emits a CardModel with the few
+  words that carry meaning (a stat's signed `delta` and `tone`, a `progress`
+  goal, a section `title`), and one renderer (`src/views/theme.ts` +
+  `src/views/sections.ts`) turns every view into the same design: warm
+  surfaces, serif titles over sans figures, one accent for marks, fixed
+  status colors, dark mode by OS preference, phone-first. Adding a word to
+  the vocabulary is one schema entry plus one renderer — the registry type
+  forces the pair. Golden HTML under `test/__golden__/` locks the design.
 - **Refresh.** A background interval per view plus a refresh-on-read backstop
   (a stale snapshot re-runs before serving); single-flight per view.
 - **Surfaces.** MCP resources `view://<id>` (list/read/subscribe — agents see
-  your cards too) and, in serve mode, bearer-authed `GET /views`,
+  your cards too) and, in serve mode, bearer-authed `GET /views` (a browser
+  gets the card grid — every view at a glance; API clients get JSON),
   `GET /views/<id>` (self-contained HTML, no scripts) and `GET /views/<id>.json`.
 - Meta tools: `pin_view`, `run_view`, `list_views`, `unpin_view`. Config block
   `views` (default-enabled): `{enabled, dir, maxViews, queryTimeoutMs,

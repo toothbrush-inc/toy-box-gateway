@@ -23,7 +23,14 @@ export const PIN_VIEW_TOOL: Tool = {
     "Pin a compiled view: bound queries + a pure sync JS transform `(input) => CardModel` + a refresh policy. " +
     "The pin dry-runs end to end and REFUSES on any failure (nothing persists) — fix and re-pin. " +
     "Pinning writes the view's grants (consent); unpinning revokes them. " +
-    "CardModel sections: stats, keyValues, list, table, text, spark. Transform sees only JSON and Math, 1s budget.",
+    "Transform sees only JSON and Math, 1s budget. " +
+    "CardModel = {title, subtitle?, updatedAt?, sections:[≤12]}; every section may carry title?. " +
+    "Sections: stats{items:[{label,value,delta?,tone?,hint?}]} (delta is a signed string like '+12%'; tone says if that is good) · " +
+    "keyValues{items:[{key,value}]} · list{items:[string|{text,tone?}]} · " +
+    "table{columns:[string|{label,align?:'left'|'right'}],rows:[[string]]} · text{text} · " +
+    "spark{label?,unit?,points:[number]} · bars{unit?,items:[{label,value≥0}]} · " +
+    "progress{items:[{label,value,max,min?,display?,tone?}]}. tone ∈ good|warn|bad|neutral. " +
+    "Say what the data MEANS (delta, tone, goal); the gateway owns the look — the same card renders on /views and /views/<id>.",
   inputSchema: {
     type: "object",
     properties: {

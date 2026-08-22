@@ -1,8 +1,13 @@
 // Deterministic renderers: same spec + snapshot => byte-identical output.
-// The HTML card is fully self-contained — one inline style block, no scripts,
-// no external assets. Error snapshots render an error card, never a 500.
+// One card renderer serves both the single-view page and the index grid; the
+// stylesheet (theme.ts) and the section registry (sections.ts) own the look.
+// Pages are fully self-contained — inline style, no scripts, no external
+// assets. Error snapshots render an error card, never a 500.
 
-import type { CardSection, ViewSnapshot, ViewSpec } from "./model.js";
+import type { CardModel, CardSection, ViewSnapshot, ViewSpec } from "./model.js";
+import { renderSection } from "./sections.js";
+import { esc, formatInterval, formatTimestamp } from "./text.js";
+import { THEME_CSS } from "./theme.js";
 
 export function renderCardJson(spec: ViewSpec, snapshot: ViewSnapshot): Record<string, unknown> {
   return {
@@ -23,142 +28,170 @@ export function renderCardJson(spec: ViewSpec, snapshot: ViewSnapshot): Record<s
   };
 }
 
-const STYLE = [
-  "body{margin:0;padding:24px;background:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#18181b}",
-  ".card{max-width:640px;margin:0 auto;background:#fff;border:1px solid #e4e4e7;border-radius:12px;padding:20px 24px;box-shadow:0 1px 3px rgba(0,0,0,.06)}",
-  "h1{font-size:18px;margin:0 0 2px}",
-  ".sub{color:#71717a;font-size:13px;margin:0 0 14px}",
-  ".sec{margin:14px 0}",
-  ".stats{display:flex;flex-wrap:wrap;gap:16px}",
-  ".stat .v{font-size:22px;font-weight:600}",
-  ".stat .l{font-size:12px;color:#71717a}",
-  ".stat .h{font-size:11px;color:#a1a1aa}",
-  "table{border-collapse:collapse;width:100%;font-size:13px}",
-  "th,td{text-align:left;padding:4px 8px;border-bottom:1px solid #f0f0f1}",
-  "th{color:#71717a;font-weight:500}",
-  "ul{margin:0;padding-left:20px;font-size:14px}",
-  ".kv{font-size:14px}.kv b{font-weight:600}",
-  ".txt{font-size:14px;white-space:pre-wrap}",
-  ".err{color:#b91c1c;font-size:14px}",
-  ".meta{color:#a1a1aa;font-size:11px;margin-top:16px}",
-].join("");
+export interface CardOptions {
+  /** Wrap the card in a link (the index grid). */
+  href?: string;
+  /** Stagger index for the load animation (the index grid). */
+  index?: number;
+  /** Show only the leading sections (the index grid); the link leads to the full card. */
+  compact?: boolean;
+  /** Heading level for the card title: h1 on its own page, h2 inside the index. */
+  heading?: "h1" | "h2";
+}
 
-export function renderCardHtml(spec: ViewSpec, snapshot: ViewSnapshot): string {
-  const model = snapshot.model;
-  const body =
-    snapshot.ok && model !== undefined
-      ? [
-          `<h1>${esc(model.title)}</h1>`,
-          model.subtitle === undefined ? "" : `<p class="sub">${esc(model.subtitle)}</p>`,
-          ...model.sections.map((section) => renderSection(section)),
-        ].join("")
-      : [
-          `<h1>${esc(spec.title)}</h1>`,
-          `<p class="err">view failed (${esc(snapshot.error?.kind ?? "unknown")}): ${esc(snapshot.error?.message ?? "no details")}</p>`,
-        ].join("");
+/** One card. The snapshot may be missing (never run), failed, or ok. */
+export function renderCard(spec: ViewSpec, snapshot: ViewSnapshot | undefined, options: CardOptions = {}): string {
+  const model = snapshot !== undefined && snapshot.ok ? snapshot.model : undefined;
+  const status = snapshot === undefined ? "none" : snapshot.ok ? "ok" : "bad";
+  const statusLabel = status === "none" ? "not run yet" : status === "ok" ? "healthy" : "failing";
+  const heading = options.heading ?? "h1";
+
+  const title = model?.title ?? spec.title;
+  const subtitle = model?.subtitle ?? spec.description;
+  // Kicker: the pinned name (when the model headlines differently), the
+  // sensitivity, the cadence — the card's byline.
+  const kicker =
+    `<div class="kicker"><span class="status status--${status}" role="img" aria-label="${statusLabel}"></span>` +
+    `${title === spec.title ? "" : `<span class="name">${esc(spec.title)}</span>`}` +
+    `<span class="chip chip--${esc(spec.sensitivity)}">${esc(spec.sensitivity)}</span>` +
+    `<span>${esc(formatInterval(spec.refresh.intervalMs))}</span></div>`;
+  const head =
+    `<header class="card-head">${kicker}<${heading} class="card-title">${esc(title)}</${heading}>` +
+    `${subtitle === undefined || subtitle === "" ? "" : `<p class="card-sub">${esc(subtitle)}</p>`}</header>`;
+
+  let body: string;
+  if (model !== undefined) {
+    const shown = options.compact === true ? compactSections(model) : model.sections;
+    const hidden = model.sections.length - shown.length;
+    body =
+      shown.map((section) => renderSection(section)).join("") +
+      (hidden === 0 ? "" : `<p class="more">+${String(hidden)} more ${hidden === 1 ? "section" : "sections"} →</p>`);
+  } else if (snapshot === undefined) {
+    body = `<p class="empty">Not run yet — the first render appears here.</p>`;
+  } else {
+    body = renderError(snapshot);
+  }
+
+  const classes = ["card"];
+  if (status === "bad") {
+    classes.push("card--error");
+  }
+  const style = options.index === undefined ? "" : ` style="--i:${String(options.index)}"`;
+  const article =
+    `<article class="${classes.join(" ")}"${style}>${head}<div class="card-body">${body}</div>` +
+    `${renderFooter(snapshot)}</article>`;
+  return options.href === undefined ? article : `<a class="card-link" href="${esc(options.href)}">${article}</a>`;
+}
+
+function renderError(snapshot: ViewSnapshot): string {
+  const kind = snapshot.error?.kind ?? "unknown";
+  const message = snapshot.error?.message ?? "no details";
+  const queries = Object.entries(snapshot.queryErrors ?? {});
+  const list =
+    queries.length === 0
+      ? ""
+      : `<ul class="err-q">${queries
+          .map(
+            ([key, error]) =>
+              `<li><code>${esc(key)}</code> ${esc(error.message)}${error.code === undefined ? "" : ` <code>${esc(error.code)}</code>`}</li>`,
+          )
+          .join("")}</ul>`;
+  return (
+    `<p class="err"><span class="chip chip--bad">${esc(kind)}</span> view failed: <code>${esc(message)}</code></p>` +
+    list
+  );
+}
+
+function renderFooter(snapshot: ViewSnapshot | undefined): string {
+  if (snapshot === undefined) {
+    return "";
+  }
   const provenance = (snapshot.provenance ?? [])
     .map((entry) => `${entry.capability}${entry.version === null ? "" : `@${entry.version}`}`)
     .filter((value, index, all) => all.indexOf(value) === index)
     .join(", ");
-  return [
-    "<!doctype html><html><head><meta charset=\"utf-8\">",
-    `<meta name="viewport" content="width=device-width, initial-scale=1">`,
-    `<title>${esc(spec.title)}</title><style>${STYLE}</style></head><body>`,
-    `<div class="card">${body}`,
-    `<p class="meta">rendered ${esc(snapshot.startedAt)} in ${String(snapshot.durationMs)}ms${provenance === "" ? "" : ` · from ${esc(provenance)}`}</p>`,
-    "</div></body></html>",
-  ].join("");
+  const from = provenance === "" ? "" : `from ${esc(provenance)}`;
+  const rendered = `rendered ${esc(formatTimestamp(snapshot.startedAt))} · ${String(snapshot.durationMs)} ms`;
+  return `<footer class="card-foot"><span>${from}</span><span>${rendered}</span></footer>`;
 }
 
-function renderSection(section: CardSection): string {
+/** The index keeps cards glanceable: leading sections up to a height budget,
+ * always cut at a section boundary (never mid-table), the rest summarized. */
+const COMPACT_BUDGET = 14;
+
+function compactSections(model: CardModel): CardModel["sections"] {
+  const shown: CardModel["sections"] = [];
+  let spent = 0;
+  for (const section of model.sections) {
+    const cost = sectionCost(section);
+    if (shown.length > 0 && spent + cost > COMPACT_BUDGET) {
+      break;
+    }
+    shown.push(section);
+    spent += cost;
+  }
+  return shown;
+}
+
+function sectionCost(section: CardSection): number {
   switch (section.kind) {
     case "stats":
-      return `<div class="sec stats">${section.items
-        .map(
-          (item) =>
-            `<div class="stat"><div class="v">${esc(item.value)}</div><div class="l">${esc(item.label)}</div>${item.hint === undefined ? "" : `<div class="h">${esc(item.hint)}</div>`}</div>`,
-        )
-        .join("")}</div>`;
-    case "keyValues":
-      return `<div class="sec kv">${section.items
-        .map((item) => `<div><b>${esc(item.key)}</b>: ${esc(item.value)}</div>`)
-        .join("")}</div>`;
-    case "list":
-      return `<ul class="sec">${section.items.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>`;
+      return 3;
+    case "spark":
+    case "bars":
+      return 4;
+    case "progress":
+      return 1 + section.items.length;
     case "table":
-      return `<table class="sec"><thead><tr>${section.columns
-        .map((column) => `<th>${esc(column)}</th>`)
-        .join("")}</tr></thead><tbody>${section.rows
-        .map((row) => `<tr>${row.map((value) => `<td>${esc(value)}</td>`).join("")}</tr>`)
-        .join("")}</tbody></table>`;
+      return 1 + section.rows.length / 2;
+    case "list":
+    case "keyValues":
+      return 1 + section.items.length / 2;
     case "text":
-      return `<div class="sec txt">${esc(section.text)}</div>`;
-    case "spark": {
-      const points = section.points;
-      const min = Math.min(...points);
-      const max = Math.max(...points);
-      const span = max - min || 1;
-      const coords = points
-        .map((point, index) => {
-          const x = (index / (points.length - 1)) * 200;
-          const y = 40 - ((point - min) / span) * 36 - 2;
-          return `${x.toFixed(2)},${y.toFixed(2)}`;
-        })
-        .join(" ");
-      return `<div class="sec">${section.label === undefined ? "" : `<div class="l" style="font-size:12px;color:#71717a">${esc(section.label)}</div>`}<svg width="200" height="40" viewBox="0 0 200 40" role="img"><polyline fill="none" stroke="#2563eb" stroke-width="1.5" points="${coords}"/></svg></div>`;
-    }
+      return 1 + Math.ceil(section.text.length / 120);
   }
 }
 
-export interface ViewIndexEntry {
-  id: string;
-  title: string;
-  sensitivity: string;
-  intervalMs: number | null;
-  lastRun: string | null;
-  lastOk: boolean | null;
+function page(title: string, body: string, pageClass: string): string {
+  return (
+    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+    `<meta name="viewport" content="width=device-width, initial-scale=1">` +
+    `<meta name="color-scheme" content="light dark"><meta name="robots" content="noindex">` +
+    `<title>${esc(title)}</title><style>${THEME_CSS}</style></head>` +
+    `<body><main class="page ${pageClass}">${body}</main></body></html>`
+  );
 }
 
-/** The signed-in browser's landing page: one bookmark, every card. */
+export function renderCardHtml(spec: ViewSpec, snapshot: ViewSnapshot): string {
+  const nav = `<nav class="top"><a href="/views">← All views</a><span class="id">${esc(spec.id)}</span></nav>`;
+  return page(spec.title, nav + renderCard(spec, snapshot, { heading: "h1" }), "page--single");
+}
+
+export interface ViewIndexEntry {
+  spec: ViewSpec;
+  snapshot: ViewSnapshot | undefined;
+}
+
+/** The signed-in browser's landing page: one bookmark, every card, at a glance. */
 export function renderViewsIndexHtml(entries: readonly ViewIndexEntry[]): string {
-  const rows = entries
-    .map((entry) => {
-      const status =
-        entry.lastOk === null ? "never run" : entry.lastOk ? "ok" : "failing";
-      const refresh =
-        entry.intervalMs === null ? "on demand" : `every ${String(Math.round(entry.intervalMs / 60000))} min`;
-      return (
-        `<a class="row" href="/views/${esc(entry.id)}">` +
-        `<span class="t">${esc(entry.title)}</span>` +
-        `<span class="m">${esc(refresh)} · ${esc(status)}${entry.lastRun === null ? "" : ` · ${esc(entry.lastRun)}`}</span>` +
-        `</a>`
-      );
-    })
-    .join("");
+  const failing = entries.filter((entry) => entry.snapshot !== undefined && !entry.snapshot.ok).length;
+  const summary =
+    entries.length === 0
+      ? "nothing pinned"
+      : `${String(entries.length)} pinned${failing === 0 ? "" : ` · ${String(failing)} failing`}`;
+  const masthead = `<header class="masthead"><h1>Views</h1><p>${esc(summary)}</p></header>`;
   const body =
     entries.length === 0
       ? `<p class="empty">No views pinned yet. Ask your agent to pin one — it compiles the card once, then this page serves it forever.</p>`
-      : rows;
-  return [
-    "<!doctype html><html><head><meta charset=\"utf-8\">",
-    `<meta name="viewport" content="width=device-width, initial-scale=1">`,
-    `<title>Views</title><style>${STYLE}`,
-    ".row{display:flex;flex-direction:column;gap:2px;padding:12px 4px;border-bottom:1px solid #f0f0f1;text-decoration:none;color:inherit}",
-    ".row:hover{background:#fafafa}",
-    ".t{font-weight:600}",
-    ".m{font-size:12px;color:#71717a}",
-    ".empty{color:#71717a;font-size:14px}",
-    "</style></head><body>",
-    `<div class="card"><h1>Views</h1>${body}</div>`,
-    "</body></html>",
-  ].join("");
-}
-
-function esc(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+      : `<section class="grid">${entries
+          .map((entry, index) =>
+            renderCard(entry.spec, entry.snapshot, {
+              href: `/views/${entry.spec.id}`,
+              index,
+              compact: true,
+              heading: "h2",
+            }),
+          )
+          .join("")}</section>`;
+  return page("Views", masthead + body, "page--index");
 }

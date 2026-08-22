@@ -75,6 +75,31 @@ describe("view model schemas", () => {
         sections: [{ kind: "table", columns: ["a", "b"], rows: [["only-one"]] }],
       }).success,
     ).toBe(false);
+    // the meaning words: delta/tone on stats, toned list items, column specs,
+    // bars and progress — bounded like everything else
+    expect(
+      CardModelSchema.safeParse({
+        title: "T",
+        sections: [
+          { kind: "stats", title: "S", items: [{ label: "L", value: "V", delta: "+1", tone: "good" }] },
+          { kind: "list", items: ["a", { text: "b", tone: "warn" }] },
+          { kind: "table", columns: [{ label: "n", align: "right" }], rows: [["1"]] },
+          { kind: "bars", unit: "km", items: [{ label: "Mon", value: 1 }, { label: "Tue", value: 0 }] },
+          { kind: "progress", items: [{ label: "Goal", value: 4, max: 5, tone: "good" }] },
+        ],
+      }).success,
+    ).toBe(true);
+    expect(
+      CardModelSchema.safeParse({ title: "T", sections: [{ kind: "stats", items: [{ label: "L", value: "V", tone: "great" }] }] })
+        .success,
+    ).toBe(false);
+    expect(
+      CardModelSchema.safeParse({ title: "T", sections: [{ kind: "bars", items: [{ label: "only", value: 1 }] }] }).success,
+    ).toBe(false);
+    expect(
+      CardModelSchema.safeParse({ title: "T", sections: [{ kind: "progress", items: [{ label: "G", value: 1, max: 0 }] }] })
+        .success,
+    ).toBe(false);
   });
 });
 
@@ -179,6 +204,29 @@ describe("renderers", () => {
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("fitness@0.2.0");
     expect(html).toContain("<polyline");
+    expect(html).not.toContain("<script");
+
+    // every vocabulary word renders, and meaning drives markup not color alone
+    const rich = renderCardHtml(spec, {
+      ...ok,
+      model: {
+        title: "Rich",
+        sections: [
+          { kind: "stats", items: [{ label: "Pace", value: "5:19", delta: "-4s", tone: "good" }] },
+          { kind: "list", items: [{ text: "Gusty", tone: "warn" }] },
+          { kind: "table", columns: ["Day", "km"], rows: [["Mon", "9.8"], ["Tue", "6"]] },
+          { kind: "bars", items: [{ label: "A", value: 2 }, { label: "B", value: 5 }] },
+          { kind: "progress", items: [{ label: "Goal", value: 4, max: 5, display: "4 of 5" }] },
+        ],
+      },
+    });
+    expect(rich).toContain("▼ 4s");
+    expect(rich).toContain('class="d d--good"');
+    expect(rich).toContain('class="t-warn"');
+    expect(rich).toContain('<th class="num">km</th>'); // detected numeric column
+    expect(rich).toContain('style="height:78.0%"'); // the peak bar
+    expect(rich).toContain('style="width:80.0%"');
+    expect(rich).toContain("4 of 5");
 
     const failed = {
       viewId: "morning",
@@ -188,7 +236,9 @@ describe("renderers", () => {
       durationMs: 2,
     };
     const errorHtml = renderCardHtml(spec, failed);
-    expect(errorHtml).toContain("view failed (transform)");
+    expect(errorHtml).toContain("view failed:");
+    expect(errorHtml).toContain('class="chip chip--bad">transform</span>');
+    expect(errorHtml).toContain("card--error");
     expect(errorHtml).toContain("sneaky");
 
     const json = renderCardJson(spec, ok);

@@ -286,14 +286,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
           .type("text/html; charset=utf-8")
           .send(
             renderViewsIndexHtml(
-              list.map((entry) => ({
-                id: entry.id,
-                title: entry.title,
-                sensitivity: entry.sensitivity,
-                intervalMs: entry.refresh.intervalMs,
-                lastRun: entry.lastRun,
-                lastOk: entry.lastOk,
-              })),
+              views.list().map((spec) => ({ spec, snapshot: views.getSnapshot(spec.id) })),
             ),
           );
         return;
