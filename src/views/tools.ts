@@ -62,7 +62,8 @@ export const PREVIEW_VIEW_TOOL: Tool = {
     "— hand that URL to the person so they can look at the card and say what to change. " +
     "Nothing persists: no grants, no refresh, no entry in /views. " +
     "A failed run returns preview_failed with the transform/query errors (and the URL of the error card). " +
-    "Iterate here; when it looks right, call pin_view with the identical view. " +
+    "Iterate here, but sparingly: every call carries the whole transform and returns the full card model, " +
+    "so test the transform locally first and batch edits. When it looks right, call pin_view with the identical view. " +
     CARD_MODEL_GRAMMAR,
   inputSchema: {
     type: "object",

@@ -925,7 +925,13 @@ export function createGatewaySession(core: GatewayCore, identity: CallIdentity =
           ? ""
           : " Pinned views are served as view://<id> resources; author them with " +
             "preview_view (renders to a short-lived URL, persists nothing) and pin_view " +
-            "(dry-run proves before persisting), then run_view/list_views/unpin_view."),
+            "(dry-run proves before persisting), then run_view/list_views/unpin_view. " +
+            "Token thrift for views: check each bound query tool's caps (row/hour limits, payload " +
+            "size) before designing a transform; draft the transform in a local file and smoke-test " +
+            "it under node:vm with only JSON+Math (1 s budget) before previewing; preview_view/pin_view " +
+            "take the whole transform inline and return the full card model, so batch edits, keep " +
+            "preview rounds few, and never echo the transform back into the conversation. Edits to a " +
+            "capability's source reach this gateway only after that capability is restarted/redeployed."),
     },
   );
 
