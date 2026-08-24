@@ -278,7 +278,7 @@ describe("executor", () => {
     expect(snapshot.provenance).toEqual([
       expect.objectContaining({ key: "w", capability: "weather", version: "0.0.1" }),
     ]);
-    expect(callPeer).toHaveBeenCalledWith("weather", "echo", { text: "hi" }, { timeoutMs: 5_000 });
+    expect(callPeer).toHaveBeenCalledWith("weather", "echo", { text: "hi" }, { timeoutMs: 5_000, user: "dvd" });
     const rows = readFileSync(audit.path, "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(rows[0]).toMatchObject({
       capability: "view-morning",

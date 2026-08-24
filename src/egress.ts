@@ -7,7 +7,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   createServer,
   type IncomingMessage,
@@ -18,17 +18,21 @@ import {
 import {
   CAPABILITY_PROVIDER,
   connectionId,
+  FileProfileStore,
   openVault,
+  resolveVaultHome,
   parseCapabilityManifest,
   PROFILE_CONNECTION_ID,
   PROFILE_MAX_FIELDS,
   PROFILE_PROVIDER,
   type ManifestConnectionNeed,
   type ManifestData,
+  type ProfileStore,
   type Vault,
 } from "@local/vault";
 
 import type { AuditEntry, AuditWriter } from "./audit.js";
+import { userSlug } from "./call-scope.js";
 import type { CapabilitySpec } from "./config.js";
 import { redactErrorMessage } from "./redact.js";
 
@@ -192,13 +196,18 @@ export interface EgressServerOptions {
   fetchImpl?: typeof fetch;
   /** Capability package.json version read at mount; null when unknown. */
   versionOf?: (capabilityId: string) => string | null;
+  /** Resolves a call nonce back to the user it was minted for. Only the
+   * gateway can do this, which is what makes the nonce unforgeable. */
+  resolveCall?: (nonce: string | undefined) => string | undefined;
+  /** Root for per-user data; defaults to a `users` dir beside the vault. */
+  usersDir?: string;
   /** Routes a granted peer call to the mounted producer. Throws coded errors
    * (call_not_mounted, denied_by_policy, call_failed). */
   callPeer?: (
     producer: string,
     tool: string,
     args: Record<string, unknown>,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; user?: string },
   ) => Promise<PeerToolResult>;
 }
 
@@ -220,10 +229,14 @@ export class EgressServer {
   private readonly googleTokenUrl: string;
   private readonly tokenCache = new Map<string, CachedToken>();
   private readonly inflightCalls = new Map<string, number>();
+  private readonly userProfiles = new Map<string, ProfileStore>();
+  private readonly usersDir: string;
   private urlValue: string | null = null;
 
   constructor(private readonly options: EgressServerOptions) {
     this.vault = openVault({ env: options.env, grantMode: "explicit" });
+    this.usersDir =
+      options.usersDir ?? join(dirname(resolveVaultHome(undefined, options.env)), "users");
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.googleTokenUrl = options.googleTokenUrl ?? DEFAULT_GOOGLE_TOKEN_URL;
     this.server = createServer((request, response) => {
@@ -274,17 +287,41 @@ export class EgressServer {
       });
       return;
     }
+    // The child echoes the nonce the gateway gave it; only we can resolve it,
+    // so a capability cannot claim to be someone else by setting a header.
+    const raw = request.headers["x-vault-call"];
+    const nonce = typeof raw === "string" ? raw : undefined;
+    const user = this.options.resolveCall?.(nonce);
     if (route === "POST /fetch") {
-      await this.handleFetch(capability, body, response);
+      await this.handleFetch(capability, body, response, user);
     } else if (route === "POST /token") {
-      await this.handleToken(capability, body, response);
+      await this.handleToken(capability, body, response, user);
     } else if (route === "POST /profile") {
-      await this.handleProfile(capability, body, response);
+      await this.handleProfile(capability, body, response, user);
     } else if (route === "POST /call") {
-      await this.handleCall(capability, body, response);
+      await this.handleCall(capability, body, response, user);
     } else {
-      this.handleCommons(capability, body, response);
+      this.handleCommons(capability, body, response, user);
     }
+  }
+
+  /**
+   * That user's own profile, or the shared one when the call arrives without
+   * an identity — a capability run standalone, or the collector on its timer.
+   * Grants stay on the shared vault: the operator grants a capability a field
+   * once, and each user supplies their own value for it.
+   */
+  private profileFor(user: string | undefined): Record<string, string> {
+    const slug = user === undefined ? null : userSlug(user);
+    if (slug === null) {
+      return this.vault.getProfile();
+    }
+    let store = this.userProfiles.get(slug);
+    if (store === undefined) {
+      store = new FileProfileStore(join(this.usersDir, slug, "profile.json"));
+      this.userProfiles.set(slug, store);
+    }
+    return store.read();
   }
 
   /** Injects capability_version (when known) into every audit row. */
@@ -313,6 +350,7 @@ export class EgressServer {
     capability: string,
     body: Record<string, unknown>,
     response: ServerResponse,
+    user: string | undefined,
   ): Promise<void> {
     const startedAt = Date.now();
     const provider = typeof body["provider"] === "string" ? body["provider"] : "";
@@ -321,6 +359,7 @@ export class EgressServer {
       this.record({
         ts: new Date().toISOString(),
         capability,
+        ...(user === undefined ? {} : { user }),
         tool: `egress:${provider === "" ? "unknown" : provider}`,
         outcome,
         duration_ms: Date.now() - startedAt,
@@ -446,6 +485,7 @@ export class EgressServer {
     capability: string,
     body: Record<string, unknown>,
     response: ServerResponse,
+    user: string | undefined,
   ): Promise<void> {
     const startedAt = Date.now();
     const provider = typeof body["provider"] === "string" ? body["provider"] : "";
@@ -454,6 +494,7 @@ export class EgressServer {
       this.record({
         ts: new Date().toISOString(),
         capability,
+        ...(user === undefined ? {} : { user }),
         tool: `token:${provider === "" ? "unknown" : provider}`,
         outcome,
         duration_ms: Date.now() - startedAt,
@@ -584,6 +625,7 @@ export class EgressServer {
     capability: string,
     body: Record<string, unknown>,
     response: ServerResponse,
+    user: string | undefined,
   ): Promise<void> {
     const startedAt = Date.now();
     const rawFields = body["fields"];
@@ -594,6 +636,7 @@ export class EgressServer {
       this.record({
         ts: new Date().toISOString(),
         capability,
+        ...(user === undefined ? {} : { user }),
         tool: "profile:read",
         outcome,
         duration_ms: Date.now() - startedAt,
@@ -654,7 +697,7 @@ export class EgressServer {
       );
       return;
     }
-    const stored = this.vault.getProfile();
+    const stored = this.profileFor(user);
     const fields: Record<string, string> = {};
     for (const field of requested) {
       const value = stored[field];
@@ -670,6 +713,7 @@ export class EgressServer {
     capability: string,
     body: Record<string, unknown>,
     response: ServerResponse,
+    user: string | undefined,
   ): Promise<void> {
     const startedAt = Date.now();
     const producer = typeof body["capability"] === "string" ? body["capability"] : "";
@@ -679,6 +723,7 @@ export class EgressServer {
       this.record({
         ts: new Date().toISOString(),
         capability,
+        ...(user === undefined ? {} : { user }),
         tool: `call:${producer === "" ? "unknown" : producer}__${tool === "" ? "unknown" : tool}`,
         outcome,
         duration_ms: Date.now() - startedAt,
@@ -749,7 +794,12 @@ export class EgressServer {
     this.inflightCalls.set(capability, inflight + 1);
     let result: PeerToolResult;
     try {
-      result = await this.options.callPeer(producer, tool, args);
+      // Unidentified callers keep the original shape; only a resolved caller
+      // adds opts, so a standalone peer call is unchanged.
+      result =
+        user === undefined
+          ? await this.options.callPeer(producer, tool, args)
+          : await this.options.callPeer(producer, tool, args, { user });
     } catch (error) {
       const rawCode = (error as { code?: unknown }).code;
       const code = typeof rawCode === "string" ? rawCode : "call_failed";
@@ -790,6 +840,7 @@ export class EgressServer {
     capability: string,
     body: Record<string, unknown>,
     response: ServerResponse,
+    user: string | undefined,
   ): void {
     const startedAt = Date.now();
     const dataset = typeof body["dataset"] === "string" ? body["dataset"] : "";
@@ -798,6 +849,7 @@ export class EgressServer {
       this.record({
         ts: new Date().toISOString(),
         capability,
+        ...(user === undefined ? {} : { user }),
         tool: `commons:${dataset === "" ? "unknown" : dataset}`,
         outcome,
         duration_ms: Date.now() - startedAt,

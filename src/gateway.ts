@@ -43,6 +43,7 @@ import {
   type GoogleOAuthCreds,
 } from "./egress.js";
 import { resolveGatewayHome } from "./home.js";
+import { CALL_NONCE_META_KEY, CallScopeRegistry } from "./call-scope.js";
 import { evaluatePolicy } from "./policy.js";
 import { parsePrefixedName, ToolRegistry } from "./registry.js";
 import { redactErrorMessage } from "./redact.js";
@@ -282,12 +283,16 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
     oauth = { google: loadGoogleOAuthCreds(config.oauth.google) };
   }
   // The single peer-call enforcement seam: producer mounted + tool policy,
+  // Resolves a nonce back to its caller; only the broker, in this process,
+  // can do so, which is why a capability never holds an identity itself.
+  const callScope = new CallScopeRegistry();
+
   // used by both the broker's POST /call route and the views executor.
   const callPeer = async (
     producer: string,
     tool: string,
     args: Record<string, unknown>,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; user?: string },
   ): Promise<CallToolResult> => {
     const producerSpec = specs.get(producer);
     const mounted = children.get(producer);
@@ -307,11 +312,24 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
     if (opts?.timeoutMs !== undefined) {
       callOptions.timeout = opts.timeoutMs;
     }
-    return (await mounted.client.callTool(
-      { name: tool, arguments: args },
-      CallToolResultSchema,
-      callOptions,
-    )) as CallToolResult;
+    const peerParams: {
+      name: string;
+      arguments: Record<string, unknown>;
+      _meta?: Record<string, unknown>;
+    } = { name: tool, arguments: args };
+    const peerNonce = callScope.mint(opts?.user);
+    if (peerNonce !== undefined) {
+      peerParams._meta = { [CALL_NONCE_META_KEY]: peerNonce };
+    }
+    try {
+      return (await mounted.client.callTool(
+        peerParams,
+        CallToolResultSchema,
+        callOptions,
+      )) as CallToolResult;
+    } finally {
+      callScope.release(peerNonce);
+    }
   };
 
   const egressServer = new EgressServer({
@@ -323,6 +341,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
     ...(oauth === undefined ? {} : { oauth }),
     ...(config.commons === undefined ? {} : { commonsDir: config.commons.dir }),
     versionOf: (capabilityId) => versionByCapability.get(capabilityId) ?? null,
+    resolveCall: (nonce) => callScope.resolve(nonce),
     callPeer,
   });
   const egressUrl = await egressServer.listen();
@@ -863,12 +882,21 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
         };
       }
 
+      const callNonce = callScope.mint(identity.user);
       try {
-        const callParams: { name: string; arguments?: Record<string, unknown> } = {
+        const callParams: {
+          name: string;
+          arguments?: Record<string, unknown>;
+          _meta?: Record<string, unknown>;
+        } = {
           name: parsed.toolName,
         };
         if (request.params.arguments !== undefined) {
           callParams.arguments = request.params.arguments;
+        }
+        // Opaque to the child; the broker resolves it back to this caller.
+        if (callNonce !== undefined) {
+          callParams._meta = { [CALL_NONCE_META_KEY]: callNonce };
         }
         const result = (await mounted.client.callTool(
           callParams,
@@ -897,6 +925,8 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
           error: message,
         });
         return errorResult("call_failed", `calling '${name}' failed: ${message}`);
+      } finally {
+        callScope.release(callNonce);
       }
     },
   };

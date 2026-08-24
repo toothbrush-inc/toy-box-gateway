@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { openVault } from "@local/vault";
+import { FileProfileStore, openVault } from "@local/vault";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AuditWriter, type AuditEntry } from "../src/audit.js";
@@ -107,6 +107,8 @@ async function startBroker(
       args: Record<string, unknown>,
     ) => Promise<{ content?: unknown; structuredContent?: unknown; isError?: boolean }>;
     versionOf?: (capabilityId: string) => string | null;
+    resolveCall?: (nonce: string | undefined) => string | undefined;
+    usersDir?: string;
   } = {},
 ): Promise<Harness> {
   const dir = tempDir();
@@ -138,6 +140,8 @@ async function startBroker(
     ...(options.commonsDir === undefined ? {} : { commonsDir: options.commonsDir }),
     ...(options.callPeer === undefined ? {} : { callPeer: options.callPeer }),
     ...(options.versionOf === undefined ? {} : { versionOf: options.versionOf }),
+    ...(options.resolveCall === undefined ? {} : { resolveCall: options.resolveCall }),
+    ...(options.usersDir === undefined ? {} : { usersDir: options.usersDir }),
     fetchImpl: upstream as unknown as typeof fetch,
   });
   servers.push(server);
@@ -150,12 +154,14 @@ async function call(
   path: "/fetch" | "/token" | "/profile" | "/commons" | "/call",
   token: string | null,
   body: unknown,
+  nonce?: string,
 ): Promise<{ status: number; json: Record<string, unknown> }> {
   const response = await fetch(`${harness.url}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(token === null ? {} : { Authorization: `Bearer ${token}` }),
+      ...(nonce === undefined ? {} : { "X-Vault-Call": nonce }),
     },
     body: JSON.stringify(body),
   });
@@ -321,6 +327,83 @@ describe("EgressServer /fetch", () => {
     });
     expect(post.status).toBe(405);
     expect(errorCode(post.json)).toBe("egress_method_not_allowed");
+  });
+});
+
+describe("EgressServer /profile per user", () => {
+  const NONCES: Record<string, string> = {
+    "n-dvd": "dvd@thephotobase.com",
+    "n-sam": "sam@example.com",
+    "n-view": "dvd",
+  };
+
+  async function startWithUsers(): Promise<{ harness: Harness; usersDir: string }> {
+    const usersDir = join(tempDir(), "users");
+    const harness = await startBroker({
+      usersDir,
+      resolveCall: (nonce) => (nonce === undefined ? undefined : NONCES[nonce]),
+    });
+    harness.seedVault.putProfile({ units: "imperial" });
+    harness.seedVault.putGrant({
+      capability: "fitness",
+      connectionId: "profile:default",
+      actions: ["units", "timezone"],
+    });
+    return { harness, usersDir };
+  }
+
+  function seedUser(usersDir: string, slug: string, fields: Record<string, string>): void {
+    new FileProfileStore(join(usersDir, slug, "profile.json")).write(fields);
+  }
+
+  it("serves the caller their own profile, not the shared one", async () => {
+    const { harness, usersDir } = await startWithUsers();
+    seedUser(usersDir, "dvd_at_thephotobase_com", { units: "metric" });
+    const result = await call(harness, "/profile", "tok-fitness", { fields: ["units"] }, "n-dvd");
+    expect(result.status).toBe(200);
+    expect(result.json["fields"]).toEqual({ units: "metric" });
+  });
+
+  // The point of the whole change: two people, one process, one profile each.
+  it("keeps two users' profiles apart", async () => {
+    const { harness, usersDir } = await startWithUsers();
+    seedUser(usersDir, "dvd_at_thephotobase_com", { units: "metric" });
+    seedUser(usersDir, "sam_at_example_com", { units: "imperial", timezone: "Europe/Berlin" });
+    const [dvd, sam] = await Promise.all([
+      call(harness, "/profile", "tok-fitness", { fields: ["units", "timezone"] }, "n-dvd"),
+      call(harness, "/profile", "tok-fitness", { fields: ["units", "timezone"] }, "n-sam"),
+    ]);
+    expect(dvd.json["fields"]).toEqual({ units: "metric" });
+    expect(sam.json["fields"]).toEqual({ units: "imperial", timezone: "Europe/Berlin" });
+  });
+
+  it("falls back to the shared profile without a nonce, and for an unknown one", async () => {
+    const { harness, usersDir } = await startWithUsers();
+    seedUser(usersDir, "dvd_at_thephotobase_com", { units: "metric" });
+    const bare = await call(harness, "/profile", "tok-fitness", { fields: ["units"] });
+    const stale = await call(harness, "/profile", "tok-fitness", { fields: ["units"] }, "n-expired");
+    expect(bare.json["fields"]).toEqual({ units: "imperial" });
+    expect(stale.json["fields"]).toEqual({ units: "imperial" });
+  });
+
+  it("reads an unslugged owner, so pinned views keep resolving", async () => {
+    const { harness, usersDir } = await startWithUsers();
+    seedUser(usersDir, "dvd", { units: "metric" });
+    const result = await call(harness, "/profile", "tok-fitness", { fields: ["units"] }, "n-view");
+    expect(result.json["fields"]).toEqual({ units: "metric" });
+  });
+
+  it("attributes the broker row to the caller, still without values", async () => {
+    const { harness, usersDir } = await startWithUsers();
+    seedUser(usersDir, "sam_at_example_com", { units: "metric" });
+    await call(harness, "/profile", "tok-fitness", { fields: ["units"] }, "n-sam");
+    expect(lastAudit(harness)).toMatchObject({
+      capability: "fitness",
+      tool: "profile:read",
+      outcome: "ok",
+      user: "sam@example.com",
+    });
+    expect(readFileSync(harness.auditPath, "utf8")).not.toContain("metric");
   });
 });
 

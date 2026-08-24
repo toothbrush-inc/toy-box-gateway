@@ -21,7 +21,7 @@ export type CallPeerFn = (
   producer: string,
   tool: string,
   args: Record<string, unknown>,
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; user?: string },
 ) => Promise<PeerToolResult>;
 
 export interface ExecutorDeps {
@@ -107,6 +107,8 @@ export async function executeView(
     try {
       result = await deps.callPeer(producer, toolName, query.arguments, {
         timeoutMs: options.queryTimeoutMs,
+        // A view reads on behalf of whoever pinned it.
+        user: spec.owner,
       });
     } catch (error) {
       const rawCode = (error as { code?: unknown }).code;
