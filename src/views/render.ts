@@ -232,3 +232,140 @@ export function renderViewsIndexHtml(entries: readonly ViewIndexEntry[]): string
           .join("")}</section>`;
   return page("Views", masthead + body, "page--index");
 }
+
+// ------------------------------------------------------------------- home --
+
+/** Shape the home index needs. Declared structurally rather than imported from
+ * gateway.ts, which imports this module — CapabilitySummary satisfies it. */
+export interface HomeCapability {
+  id: string;
+  state: "connected" | "failed" | "closed";
+  lastError: string | null;
+  tools: readonly { name: string; description: string }[];
+  web?: { path: string; label: string; description?: string | undefined } | undefined;
+}
+
+export interface HomeModel {
+  capabilities: readonly HomeCapability[];
+  /** Absent when views are disabled in config. */
+  views?: { count: number; failing: number } | undefined;
+  /** Public MCP endpoint, when the gateway knows its own public URL. */
+  mcpUrl?: string | undefined;
+}
+
+/** One sentence, or a hard trim — tool descriptions are written for agents and
+ * run long; the index is for skimming. */
+function firstSentence(text: string, max = 120): string {
+  const trimmed = text.trim();
+  const stop = trimmed.search(/\.\s|\.$/u);
+  const one = stop === -1 ? trimmed : trimmed.slice(0, stop + 1);
+  return one.length <= max ? one : `${one.slice(0, max - 1).trimEnd()}…`;
+}
+
+function appCard(href: string, kicker: string, title: string, sub: string, index: number): string {
+  return (
+    `<a class="card-link" href="${esc(href)}">` +
+    `<article class="card" style="--i:${String(index)}">` +
+    `<header class="card-head">` +
+    `<div class="kicker"><span class="status status--ok" role="img" aria-label="available"></span>` +
+    `<span>${esc(kicker)}</span></div>` +
+    `<h3 class="card-title">${esc(title)}</h3>` +
+    (sub === "" ? "" : `<p class="card-sub">${esc(sub)}</p>`) +
+    `</header></article></a>`
+  );
+}
+
+function capabilityCard(cap: HomeCapability, index: number): string {
+  const up = cap.state === "connected";
+  const status = up ? "ok" : "bad";
+  const label = up
+    ? `${String(cap.tools.length)} ${cap.tools.length === 1 ? "tool" : "tools"}`
+    : cap.state;
+  const kicker =
+    `<div class="kicker"><span class="status status--${status}" role="img" aria-label="${esc(cap.state)}"></span>` +
+    `<span>${esc(label)}</span>` +
+    (cap.web === undefined ? `<span class="chip">agent-only</span>` : `<span class="chip">web</span>`) +
+    `</div>`;
+  let body: string;
+  if (!up) {
+    body = `<p class="empty">Not connected${cap.lastError === null ? "" : ` — ${esc(cap.lastError)}`}</p>`;
+  } else if (cap.tools.length === 0) {
+    body = `<p class="empty">No tools exposed.</p>`;
+  } else {
+    body =
+      `<ul class="list">` +
+      cap.tools
+        .map(
+          (tool) =>
+            `<li><span class="name">${esc(tool.name)}</span>` +
+            (tool.description === ""
+              ? ""
+              : ` <span class="trim">${esc(firstSentence(tool.description))}</span>`) +
+            `</li>`,
+        )
+        .join("") +
+      `</ul>`;
+  }
+  const classes = up ? "card" : "card card--error";
+  return (
+    `<article class="${classes}" style="--i:${String(index)}">` +
+    `<header class="card-head">${kicker}<h3 class="card-title">${esc(cap.id)}</h3></header>` +
+    body +
+    `</article>`
+  );
+}
+
+/**
+ * The front door: what this platform is and what it can do. Apps you can open
+ * are links; capabilities without a web UI still appear, with their tools, so
+ * an agent-only capability is discoverable rather than invisible. Everything
+ * is derived from what is actually mounted, so the page cannot drift.
+ */
+export function renderHomeHtml(model: HomeModel): string {
+  const connected = model.capabilities.filter((cap) => cap.state === "connected");
+  const toolCount = connected.reduce((sum, cap) => sum + cap.tools.length, 0);
+  const down = model.capabilities.length - connected.length;
+  const summary =
+    `${String(model.capabilities.length)} ${model.capabilities.length === 1 ? "capability" : "capabilities"}` +
+    ` · ${String(toolCount)} tools` +
+    (down === 0 ? "" : ` · ${String(down)} down`);
+  const masthead = `<header class="masthead"><h1>Apps</h1><p>${esc(summary)}</p></header>`;
+
+  const apps: string[] = [];
+  for (const cap of model.capabilities) {
+    if (cap.web !== undefined) {
+      apps.push(
+        appCard(cap.web.path, "dashboard", cap.web.label, cap.web.description ?? "", apps.length),
+      );
+    }
+  }
+  if (model.views !== undefined) {
+    const sub =
+      model.views.count === 0
+        ? "Nothing pinned yet"
+        : `${String(model.views.count)} pinned${model.views.failing === 0 ? "" : ` · ${String(model.views.failing)} failing`}`;
+    apps.push(appCard("/views", "views", "Views", sub, apps.length));
+  }
+  const appsSection =
+    apps.length === 0
+      ? ""
+      : `<section class="sec"><h2 class="sec-title">Open</h2><div class="grid">${apps.join("")}</div></section>`;
+
+  const capsSection =
+    model.capabilities.length === 0
+      ? `<p class="empty">No capabilities are mounted.</p>`
+      : `<section class="sec"><h2 class="sec-title">What this platform can do</h2>` +
+        `<div class="grid">${model.capabilities
+          .map((cap, index) => capabilityCard(cap, index))
+          .join("")}</div></section>`;
+
+  const agentSection =
+    model.mcpUrl === undefined
+      ? ""
+      : `<section class="sec"><h2 class="sec-title">Connect an agent</h2>` +
+        `<p class="notice">Every tool above is reachable over MCP at ` +
+        `<strong>${esc(model.mcpUrl)}</strong> — add it as an MCP server and sign in; ` +
+        `no token to copy.</p></section>`;
+
+  return page("Apps", masthead + appsSection + capsSection + agentSection, "page--index");
+}

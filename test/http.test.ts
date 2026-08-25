@@ -33,7 +33,9 @@ interface HttpHarness {
   http: HttpGateway;
 }
 
-async function startHarness(): Promise<HttpHarness> {
+async function startHarness(
+  options: { web?: { path: string; label: string; description?: string } } = {},
+): Promise<HttpHarness> {
   const dir = mkdtempSync(join(tmpdir(), "gateway-http-"));
   dirs.push(dir);
   const fake = await startFakeWeather();
@@ -44,7 +46,14 @@ async function startHarness(): Promise<HttpHarness> {
   );
   const config: GatewayConfig = {
     ...GatewayConfigSchema.parse({
-      capabilities: [{ id: "weather", command: "unused", manifestPath }],
+      capabilities: [
+        {
+          id: "weather",
+          command: "unused",
+          manifestPath,
+          ...(options.web === undefined ? {} : { web: options.web }),
+        },
+      ],
       views: { dir: join(dir, "views") },
       serve: {
         port: 0,
@@ -299,5 +308,85 @@ describe("parseBearerTokens", () => {
     expect(parsed.get("def")).toBe("default");
     expect(parsed.get("ghi")).toBe("x");
     expect(parseBearerTokens(undefined).size).toBe(0);
+  });
+});
+
+describe("home index", () => {
+  async function getHome(
+    harness: HttpHarness,
+    accept: string,
+    token: string | null = "secret-token-1",
+  ): Promise<Response> {
+    return await fetch(`${harness.url}/`, {
+      headers: {
+        accept,
+        ...(token === null ? {} : { Authorization: `Bearer ${token}` }),
+      },
+    });
+  }
+
+  it("lists an agent-only capability with what it can do", async () => {
+    const harness = await startHarness();
+    const response = await getHome(harness, "text/html");
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    // The point of the page: a capability with no web UI is still discoverable,
+    // and says what it can do rather than merely existing.
+    expect(html).toContain("weather");
+    expect(html).toContain("agent-only");
+    expect(html).toContain("echo");
+    expect(html).toContain("Echoes input");
+  });
+
+  it("links a capability that declares a web UI", async () => {
+    const harness = await startHarness({
+      web: { path: "/weather", label: "Weather", description: "Forecasts and history" },
+    });
+    const html = await (await getHome(harness, "text/html")).text();
+    expect(html).toContain('href="/weather"');
+    expect(html).toContain("Weather");
+    expect(html).toContain("Forecasts and history");
+    expect(html).not.toContain("agent-only");
+  });
+
+  it("serves the same facts as JSON", async () => {
+    const harness = await startHarness({ web: { path: "/weather", label: "Weather" } });
+    const response = await getHome(harness, "application/json");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      ok: boolean;
+      data: {
+        capabilities: { id: string; state: string; tools: { name: string }[]; web?: { path: string } }[];
+        mcpUrl: string;
+      };
+    };
+    expect(body.ok).toBe(true);
+    const weather = body.data.capabilities.find((cap) => cap.id === "weather");
+    expect(weather?.state).toBe("connected");
+    expect(weather?.web?.path).toBe("/weather");
+    expect(weather?.tools.map((tool) => tool.name)).toContain("echo");
+    expect(body.data.mcpUrl).toBe("http://127.0.0.1/mcp");
+  });
+
+  it("points at the MCP endpoint so the agent-only half is reachable", async () => {
+    const harness = await startHarness();
+    const html = await (await getHome(harness, "text/html")).text();
+    expect(html).toContain("http://127.0.0.1/mcp");
+  });
+
+  it("is not readable without auth", async () => {
+    const harness = await startHarness();
+    expect((await getHome(harness, "text/html", null)).status).toBe(401);
+  });
+
+  it("answers an unknown path with a themed 404, not the index", async () => {
+    const harness = await startHarness();
+    const response = await fetch(`${harness.url}/nope`, {
+      headers: { accept: "text/html", Authorization: "Bearer secret-token-1" },
+    });
+    expect(response.status).toBe(404);
+    const html = await response.text();
+    expect(html).toContain("Not found");
+    expect(html).not.toContain("agent-only");
   });
 });

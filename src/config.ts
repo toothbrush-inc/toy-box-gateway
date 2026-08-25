@@ -23,6 +23,17 @@ export const CapabilitySpecSchema = z.object({
   denyTools: z.array(z.string().min(1)).optional(),
   manifestPath: z.string().min(1).optional(),
   secretsAccess: z.enum(["broker"]).optional(),
+  /** Where this capability's own web UI lives, when it has one. The gateway
+   * cannot infer this: a dashboard is a separate service, not the MCP child
+   * mounted here. Capabilities without it still appear on the index — as
+   * agent-only, with their tools. */
+  web: z
+    .object({
+      path: z.string().regex(/^\/[A-Za-z0-9/_-]*$/u, "web.path must be an absolute path"),
+      label: z.string().min(1).max(60),
+      description: z.string().min(1).max(200).optional(),
+    })
+    .optional(),
 }).refine((spec) => spec.secretsAccess === undefined || spec.manifestPath !== undefined, {
   message: 'secretsAccess: "broker" requires manifestPath (the egress specs live in the manifest)',
 });

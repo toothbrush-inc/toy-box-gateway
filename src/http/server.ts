@@ -22,6 +22,7 @@ import { createGatewaySession, type CallIdentity, type GatewayCore } from "../ga
 import {
   renderCardHtml,
   renderCardJson,
+  renderHomeHtml,
   renderNoticeHtml,
   renderPreviewHtml,
   renderPreviewJson,
@@ -273,6 +274,31 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   // The glanceable card surface. Bearer-authed like /mcp; HTML by default,
   // .json for machines. A failed last run renders as an error card, not a 500.
   const views = core.views;
+
+  // The front door. Apps you can open are links; capabilities without a web UI
+  // still appear with their tools, so an agent-only capability is discoverable
+  // instead of invisible. Everything is read from what is actually mounted.
+  app.get("/", viewsAuth, (req: Request, res: Response) => {
+    let viewsSummary: { count: number; failing: number } | undefined;
+    if (views !== undefined) {
+      const pinned = views.list();
+      viewsSummary = {
+        count: pinned.length,
+        failing: pinned.filter((spec) => views.getSnapshot(spec.id)?.ok === false).length,
+      };
+    }
+    const model = {
+      capabilities: core.listCapabilities(),
+      ...(viewsSummary === undefined ? {} : { views: viewsSummary }),
+      mcpUrl: `${publicUrl}/mcp`,
+    };
+    if ((req.headers.accept ?? "").includes("text/html")) {
+      res.status(200).type("text/html; charset=utf-8").send(renderHomeHtml(model));
+      return;
+    }
+    res.status(200).json({ ok: true, data: model });
+  });
+
   if (views !== undefined) {
     app.get("/views", viewsAuth, (req: Request, res: Response) => {
       const list = views.list().map((spec) => {
@@ -356,6 +382,19 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
       }
     });
   }
+
+  // Unmatched paths reach the gateway now that it is Caddy's fallback (they
+  // used to land on the dashboard's own 404), so answer in the same voice.
+  app.use((req: Request, res: Response) => {
+    if ((req.headers.accept ?? "").includes("text/html")) {
+      res
+        .status(404)
+        .type("text/html; charset=utf-8")
+        .send(renderNoticeHtml("Not found", `Nothing is served at ${req.path}.`));
+      return;
+    }
+    res.status(404).json({ ok: false, error: { code: "not_found", message: "unknown endpoint" } });
+  });
 
   const listener: NodeHttpServer = await new Promise((resolve, reject) => {
     const server = app.listen(serve.port, serve.host, () => {

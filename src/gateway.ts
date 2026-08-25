@@ -33,7 +33,12 @@ import {
 } from "@local/vault";
 
 import { AuditWriter, type AuditEntry } from "./audit.js";
-import { ChildManager, type ChildEgress, type TransportFactory } from "./children.js";
+import {
+  ChildManager,
+  type ChildEgress,
+  type ChildState,
+  type TransportFactory,
+} from "./children.js";
 import { readCapabilityVersion, type CapabilitySpec, type GatewayConfig } from "./config.js";
 import {
   EgressServer,
@@ -160,6 +165,16 @@ export interface GatewayOptions {
   log?: (line: string) => void;
 }
 
+/** A capability as the home index sees it: is it up, and what can it do? */
+export interface CapabilitySummary {
+  id: string;
+  state: ChildState;
+  lastError: string | null;
+  /** Post-policy: denied tools are absent, as they are from tools/list. */
+  tools: { name: string; description: string }[];
+  web?: { path: string; label: string; description?: string | undefined };
+}
+
 /** Process-lifetime state: children, registry, audit, egress. One per gateway. */
 export interface GatewayCore {
   children: ChildManager;
@@ -168,6 +183,9 @@ export interface GatewayCore {
   views?: ViewsService;
   egressTokenFor(capabilityId: string): string | undefined;
   listTools(): Tool[];
+  /** Mounted capabilities with the tools policy actually exposes — what the
+   * home index renders. Deliberately lighter than buildGatewayStatus. */
+  listCapabilities(): CapabilitySummary[];
   callTool(
     request: CallToolRequest,
     extra: CallExtra,
@@ -434,6 +452,30 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
     egress: egressServer,
     ...(views === undefined ? {} : { views }),
     egressTokenFor: (capabilityId) => tokenByCapability.get(capabilityId),
+    listCapabilities: () => {
+      // Tools come from the registry, not the child, so anything hidden by
+      // allowTools/denyTools stays hidden here too.
+      const byCapability = new Map<string, { name: string; description: string }[]>();
+      for (const tool of registry.listTools()) {
+        const parsed = parsePrefixedName(tool.name);
+        if (parsed === null) {
+          continue;
+        }
+        const list = byCapability.get(parsed.capabilityId) ?? [];
+        list.push({ name: parsed.toolName, description: tool.description ?? "" });
+        byCapability.set(parsed.capabilityId, list);
+      }
+      return children.list().map((child) => {
+        const spec = specs.get(child.id);
+        return {
+          id: child.id,
+          state: child.state,
+          lastError: child.lastError,
+          tools: byCapability.get(child.id) ?? [],
+          ...(spec?.web === undefined ? {} : { web: spec.web }),
+        };
+      });
+    },
     listTools: () => [
       ...registry.listTools(),
       GATEWAY_STATUS_TOOL,
