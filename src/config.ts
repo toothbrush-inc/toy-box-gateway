@@ -128,10 +128,22 @@ export const GatewayConfigSchema = z.object({
       ]),
     })
     .optional(),
+  /** Sibling web apps that are not mounted capabilities — they still belong
+   * on the home index (MailFeed on mail.$GW_DOMAIN is the first of these). */
+  links: z
+    .array(
+      z.object({
+        href: z.string().url(),
+        label: z.string().min(1).max(60),
+        description: z.string().min(1).max(200).optional(),
+      }),
+    )
+    .default([]),
 });
 
 export type ServeConfig = NonNullable<z.infer<typeof GatewayConfigSchema>["serve"]>;
 export type ViewsConfig = z.infer<typeof GatewayConfigSchema>["views"];
+export type GatewayLink = z.infer<typeof GatewayConfigSchema>["links"][number];
 
 /** Parses "label:token,label2:token2" (or a bare token => label "default"). */
 export function parseBearerTokens(raw: string | undefined): Map<string, string> {

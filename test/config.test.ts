@@ -27,6 +27,15 @@ describe("GatewayConfigSchema", () => {
     const parsed = GatewayConfigSchema.parse({ capabilities: [{ id: "weather", command: "node" }] });
     expect(parsed.capabilities[0]?.args).toEqual([]);
     expect(parsed.audit).toEqual({ maxBytes: 5 * 1024 * 1024, keepFiles: 5 });
+    expect(parsed.links).toEqual([]);
+  });
+
+  it("parses sibling app links", () => {
+    const parsed = GatewayConfigSchema.parse({
+      capabilities: [{ id: "weather", command: "node" }],
+      links: [{ href: "https://mail.example.com", label: "MailFeed" }],
+    });
+    expect(parsed.links).toEqual([{ href: "https://mail.example.com", label: "MailFeed" }]);
   });
 
   it("parses secretsAccess and oauth, requiring manifestPath for broker mode", () => {

@@ -34,7 +34,10 @@ interface HttpHarness {
 }
 
 async function startHarness(
-  options: { web?: { path: string; label: string; description?: string } } = {},
+  options: {
+    web?: { path: string; label: string; description?: string };
+    links?: { href: string; label: string; description?: string }[];
+  } = {},
 ): Promise<HttpHarness> {
   const dir = mkdtempSync(join(tmpdir(), "gateway-http-"));
   dirs.push(dir);
@@ -55,6 +58,7 @@ async function startHarness(
         },
       ],
       views: { dir: join(dir, "views") },
+      ...(options.links === undefined ? {} : { links: options.links }),
       serve: {
         port: 0,
         host: "127.0.0.1",
@@ -81,6 +85,7 @@ async function startHarness(
     core,
     serve,
     verifier: staticTokenVerifier(tokens, serve.publicUrl),
+    ...(options.links === undefined ? {} : { links: options.links }),
     log: () => undefined,
   });
   cleanups.push(async () => {
@@ -347,6 +352,22 @@ describe("home index", () => {
     expect(html).toContain("Weather");
     expect(html).toContain("Forecasts and history");
     expect(html).not.toContain("agent-only");
+  });
+
+  it("links a sibling app that is not a mounted capability", async () => {
+    const harness = await startHarness({
+      links: [
+        {
+          href: "https://mail.example.com",
+          label: "MailFeed",
+          description: "Reading feed from your inbox",
+        },
+      ],
+    });
+    const html = await (await getHome(harness, "text/html")).text();
+    expect(html).toContain('href="https://mail.example.com"');
+    expect(html).toContain("MailFeed");
+    expect(html).toContain("Reading feed from your inbox");
   });
 
   it("serves the same facts as JSON", async () => {

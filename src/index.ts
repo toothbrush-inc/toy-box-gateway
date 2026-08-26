@@ -29,6 +29,7 @@ export {
   resolveConfigPath,
   type CapabilitySpec,
   type GatewayConfig,
+  type GatewayLink,
   type ServeConfig,
 } from "./config.js";
 export {

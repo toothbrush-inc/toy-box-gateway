@@ -35,6 +35,8 @@ import { SessionManager } from "./sessions.js";
 export interface HttpGatewayOptions {
   core: GatewayCore;
   serve: ServeConfig;
+  /** Sibling web apps that aren't mounted capabilities (see config.links). */
+  links?: readonly { href: string; label: string; description?: string | undefined }[];
   verifier: OAuthTokenVerifier;
   /** Stage 2: the gateway's own OAuth AS — mounts the auth router, the Google
    * callback, and browser-session (cookie) auth for the views surface. */
@@ -289,6 +291,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
     }
     const model = {
       capabilities: core.listCapabilities(),
+      ...(options.links === undefined || options.links.length === 0 ? {} : { links: options.links }),
       ...(viewsSummary === undefined ? {} : { views: viewsSummary }),
       mcpUrl: `${publicUrl}/mcp`,
     };

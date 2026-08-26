@@ -245,8 +245,16 @@ export interface HomeCapability {
   web?: { path: string; label: string; description?: string | undefined } | undefined;
 }
 
+export interface HomeLink {
+  href: string;
+  label: string;
+  description?: string | undefined;
+}
+
 export interface HomeModel {
   capabilities: readonly HomeCapability[];
+  /** Sibling web apps that are not mounted capabilities. */
+  links?: readonly HomeLink[] | undefined;
   /** Absent when views are disabled in config. */
   views?: { count: number; failing: number } | undefined;
   /** Public MCP endpoint, when the gateway knows its own public URL. */
@@ -318,8 +326,9 @@ function capabilityCard(cap: HomeCapability, index: number): string {
 /**
  * The front door: what this platform is and what it can do. Apps you can open
  * are links; capabilities without a web UI still appear, with their tools, so
- * an agent-only capability is discoverable rather than invisible. Everything
- * is derived from what is actually mounted, so the page cannot drift.
+ * an agent-only capability is discoverable rather than invisible. Capability
+ * cards are derived from what is mounted; `links` covers sibling apps that
+ * live elsewhere (a different subdomain) and so cannot be inferred.
  */
 export function renderHomeHtml(model: HomeModel): string {
   const connected = model.capabilities.filter((cap) => cap.state === "connected");
@@ -338,6 +347,9 @@ export function renderHomeHtml(model: HomeModel): string {
         appCard(cap.web.path, "dashboard", cap.web.label, cap.web.description ?? "", apps.length),
       );
     }
+  }
+  for (const link of model.links ?? []) {
+    apps.push(appCard(link.href, "app", link.label, link.description ?? "", apps.length));
   }
   if (model.views !== undefined) {
     const sub =
