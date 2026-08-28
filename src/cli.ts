@@ -5,7 +5,9 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { loadGatewayConfig, resolveConfigPath } from "./config.js";
+import { loadEgressSpecs, loadGoogleOAuthCreds } from "./egress.js";
 import { createGateway, createGatewayCore, GATEWAY_VERSION } from "./gateway.js";
+import { GoogleConnectFlow } from "./http/connect.js";
 import { buildServeAuth } from "./http/oauth/runtime.js";
 import { startHttpGateway } from "./http/server.js";
 
@@ -48,12 +50,26 @@ async function runServe(args: readonly string[]): Promise<void> {
   };
   const auth = buildServeAuth(serve, process.env, log);
   const core = await createGatewayCore({ config, version: GATEWAY_VERSION });
+  // The connect flow reuses the broker's Google client on purpose: a refresh
+  // token only redeems against the client that minted it.
+  let connect: GoogleConnectFlow | undefined;
+  if (config.oauth?.google?.connect !== undefined) {
+    connect = new GoogleConnectFlow({
+      publicUrl: serve.publicUrl,
+      creds: loadGoogleOAuthCreds(config.oauth.google),
+      scopes: config.oauth.google.connect.scopes,
+      specs: loadEgressSpecs(config.capabilities, log),
+      env: process.env,
+      log,
+    });
+  }
   const http = await startHttpGateway({
     core,
     serve,
     verifier: auth.verifier,
     ...(config.links.length === 0 ? {} : { links: config.links }),
     ...(auth.provider === undefined ? {} : { oauth: auth.provider }),
+    ...(connect === undefined ? {} : { connect }),
   });
   onShutdown(async () => {
     await http.close();

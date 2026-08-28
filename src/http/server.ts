@@ -29,6 +29,7 @@ import {
   renderViewsIndexHtml,
 } from "../views/render.js";
 import { BoundedEventStore } from "./event-store.js";
+import type { GoogleConnectFlow } from "./connect.js";
 import { SESSION_COOKIE, type GatewayOAuthProvider } from "./oauth/provider.js";
 import { SessionManager } from "./sessions.js";
 
@@ -41,6 +42,9 @@ export interface HttpGatewayOptions {
   /** Stage 2: the gateway's own OAuth AS — mounts the auth router, the Google
    * callback, and browser-session (cookie) auth for the views surface. */
   oauth?: GatewayOAuthProvider;
+  /** Consent flow for brokered google connections (config oauth.google.connect).
+   * Session-gated, so it only mounts alongside `oauth`. */
+  connect?: GoogleConnectFlow;
   log?: (line: string) => void;
   /** Extra express wiring before /mcp routes. */
   configureApp?: (app: express.Express) => void;
@@ -144,6 +148,63 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
       res.clearCookie(SESSION_COOKIE, { path: "/" });
       res.status(200).type("text/plain").send("signed out");
     });
+    if (options.connect !== undefined) {
+      const connect = options.connect;
+      const requireSession = (req: Request, res: Response): boolean => {
+        if (oauth.verifySessionCookie(readCookie(req, SESSION_COOKIE)) !== null) {
+          return true;
+        }
+        res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+        return false;
+      };
+      // Store a Google grant under ?slot=<role> or <tenant>_<role>: consent
+      // (offline access) -> refresh token into the vault -> grants for every
+      // capability declaring the matched role. The signed-in user completes
+      // the consent with whichever Google account owns the data.
+      app.get("/auth/google/connect", (req: Request, res: Response) => {
+        if (!requireSession(req, res)) {
+          return;
+        }
+        const started = connect.start(req.query["slot"]);
+        if (!started.ok) {
+          res
+            .status(400)
+            .type("text/html; charset=utf-8")
+            .send(renderNoticeHtml("Cannot connect", started.message));
+          return;
+        }
+        res.redirect(started.redirectTo);
+      });
+      app.get("/auth/google/connect/callback", async (req: Request, res: Response) => {
+        if (!requireSession(req, res)) {
+          return;
+        }
+        const result = await connect.handleCallback({
+          ...(typeof req.query["state"] === "string" ? { state: req.query["state"] } : {}),
+          ...(typeof req.query["code"] === "string" ? { code: req.query["code"] } : {}),
+          ...(typeof req.query["error"] === "string" ? { error: req.query["error"] } : {}),
+        });
+        if (!result.ok) {
+          res
+            .status(400)
+            .type("text/html; charset=utf-8")
+            .send(renderNoticeHtml("Connect failed", result.message));
+          return;
+        }
+        res
+          .status(200)
+          .type("text/html; charset=utf-8")
+          .send(
+            renderNoticeHtml(
+              "Connected",
+              `Stored google:${result.slot} and granted ${result.granted
+                .map((target) => target.capability)
+                .join(", ")}. The capability can mint tokens for this slot now.`,
+            ),
+          );
+      });
+    }
+
     // Caddy forward_auth target: 204 with a valid session, else redirect
     // browsers to /login and 401 everything else.
     app.get("/session/verify", (req: Request, res: Response) => {

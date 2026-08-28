@@ -79,6 +79,18 @@ export const GatewayConfigSchema = z.object({
           envFile: z.string().min(1),
           clientIdVar: z.string().min(1).default("GOOGLE_OAUTH_CLIENT_ID"),
           clientSecretVar: z.string().min(1).default("GOOGLE_OAUTH_CLIENT_SECRET"),
+          /** Enables the session-gated consent flow at /auth/google/connect,
+           * which stores refresh tokens in the vault under the requested slot
+           * (tenant instances included) and grants every capability declaring
+           * the matched role. Scopes are what the consent asks Google for —
+           * set them to what the granted capabilities actually need. The
+           * client above must have `<publicUrl>/auth/google/connect/callback`
+           * registered as a redirect URI. */
+          connect: z
+            .object({
+              scopes: z.array(z.string().min(1)).min(1),
+            })
+            .optional(),
         })
         .optional(),
     })

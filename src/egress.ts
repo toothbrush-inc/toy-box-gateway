@@ -65,6 +65,25 @@ export function newEgressToken(): string {
   return randomBytes(32).toString("hex");
 }
 
+const SLOT_TOKEN = /^[a-z][a-z0-9_-]*$/u;
+
+/**
+ * A requested slot matches a declared one exactly, or as a tenant-scoped
+ * instance `<tenant>_<declared>` (calsync's tokenSlot contract). The manifest
+ * declares the roles; the vault grants the instances — a tenant slot still
+ * needs its own connection and grant, so accepting the shape here grants
+ * nothing by itself.
+ */
+export function slotMatchesDeclared(declared: string, requested: string): boolean {
+  if (requested === declared) {
+    return true;
+  }
+  if (!requested.endsWith(`_${declared}`)) {
+    return false;
+  }
+  return SLOT_TOKEN.test(requested.slice(0, -(declared.length + 1)));
+}
+
 /** Warn-only: a capability without a parseable manifest gets an empty entry. */
 export function loadEgressSpecs(
   specs: readonly CapabilitySpec[],
@@ -501,6 +520,7 @@ export class EgressServer {
         ...(outcome === "denied" ? { denied_by: "egress" as const } : {}),
         ...(errorCode === undefined ? {} : { error_code: errorCode }),
         host: hostnameOf(this.googleTokenUrl) ?? "oauth2.googleapis.com",
+        slot,
       });
     };
     const deny = (denial: Denial): void => {
@@ -518,12 +538,14 @@ export class EgressServer {
     }
     const declared = this.options.specs
       .get(capability)
-      ?.connections.some((need) => need.provider === provider && need.slot === slot);
+      ?.connections.some(
+        (need) => need.provider === provider && slotMatchesDeclared(need.slot, slot),
+      );
     if (declared !== true) {
       deny({
         status: 403,
         code: "egress_denied",
-        message: `capability '${capability}' does not declare connection ${provider}:${slot}`,
+        message: `capability '${capability}' does not declare connection ${provider}:${slot} (or a role it instantiates)`,
       });
       return;
     }

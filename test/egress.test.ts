@@ -622,6 +622,61 @@ describe("EgressServer /token", () => {
     expect(unconfigured.status).toBe(503);
     expect(errorCode(unconfigured.json)).toBe("oauth_not_configured");
   });
+
+  it("mints tenant-scoped instances of declared slots, isolated per tenant", async () => {
+    const harness = await startBroker({
+      oauth: { google: { clientId: "cid", clientSecret: "csecret" } },
+      upstream: (url, init) => {
+        if (url !== "https://oauth2.googleapis.com/token") {
+          return new Response("nope", { status: 500 });
+        }
+        const form = new URLSearchParams((init?.body as string) ?? "");
+        const token = form.get("refresh_token") === "1//acme" ? "ya29.acme" : "ya29.default";
+        return new Response(JSON.stringify({ access_token: token, expires_in: 3600 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    await seedGoogle(harness);
+    await harness.seedVault.putSecret({
+      provider: "google",
+      slot: "acme_personal",
+      kind: "oauth",
+      secret: "1//acme",
+    });
+    harness.seedVault.putGrant({
+      capability: "calsync",
+      connectionId: "google:acme_personal",
+      actions: ["read", "write"],
+    });
+
+    const tenant = await call(harness, "/token", "tok-calsync", { provider: "google", slot: "acme_personal" });
+    expect(tenant.status).toBe(200);
+    expect(tenant.json["access_token"]).toBe("ya29.acme");
+    expect(lastAudit(harness)).toMatchObject({ tool: "token:google", outcome: "ok", slot: "acme_personal" });
+
+    const base = await call(harness, "/token", "tok-calsync", { provider: "google", slot: "personal" });
+    expect(base.json["access_token"]).toBe("ya29.default");
+
+    const again = await call(harness, "/token", "tok-calsync", { provider: "google", slot: "acme_personal" });
+    expect(again.json["access_token"]).toBe("ya29.acme");
+    expect(harness.upstream).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps tenant slots explicit: unonboarded tenants get grant_missing, non-instances egress_denied", async () => {
+    const harness = await startBroker({ oauth: { google: { clientId: "c", clientSecret: "s" } } });
+
+    const unonboarded = await call(harness, "/token", "tok-calsync", { provider: "google", slot: "acme_personal" });
+    expect(unonboarded.status).toBe(403);
+    expect(errorCode(unonboarded.json)).toBe("grant_missing");
+
+    const wrongRole = await call(harness, "/token", "tok-calsync", { provider: "google", slot: "acme_gmail" });
+    expect(errorCode(wrongRole.json)).toBe("egress_denied");
+
+    const badTenant = await call(harness, "/token", "tok-calsync", { provider: "google", slot: "9acme_personal" });
+    expect(errorCode(badTenant.json)).toBe("egress_denied");
+  });
 });
 
 describe("EgressServer /call", () => {

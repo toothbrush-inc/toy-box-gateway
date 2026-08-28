@@ -159,6 +159,25 @@ endpoint via `VAULT_EGRESS_URL` + a per-capability `VAULT_EGRESS_TOKEN`:
   capability a short-lived access token, cached until just before expiry. A
   child never sees the refresh token; a leaked access token dies within the
   hour. `invalid_grant` maps to an actionable `token_revoked`.
+
+  **Tenant slots**: a requested slot may be a declared one verbatim
+  (`personal`) or a tenant-scoped instance of it (`acme_personal` — the
+  `<tenant>_<role>` shape calsync's `tokenSlot` emits). The manifest declares
+  the roles; the vault grants the instances: a tenant slot still needs its
+  own `google:<tenant>_<role>` connection and grant, so an unonboarded tenant
+  gets a crisp `grant_missing`, never a silent success. Token-mint audit rows
+  carry the slot, so per-tenant mints stay attributable.
+
+  **Onboarding** (`oauth.google.connect` in the config): with
+  `connect: { scopes: [...] }` set, the serve process mounts a session-gated
+  consent flow at `/auth/google/connect?slot=<slot>` (requires the stage-2
+  browser session). It runs the Google consent with `access_type=offline` +
+  PKCE using the broker's own OAuth client — the one that will redeem the
+  refresh token — stores the result in the vault under `google:<slot>`, and
+  grants every capability whose manifest declares the matched role, with that
+  role's declared actions. Register
+  `<publicUrl>/auth/google/connect/callback` as a redirect URI on that
+  client once. The secret never transits a tool argument or a form field.
 - **`POST /call`** — grant-gated peer capability calls: a consumer capability
   that declares `{provider: "capability", slot: "<producer>", actions:
   [tools...]}` may invoke those producer tools through the broker. The broker

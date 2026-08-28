@@ -34,6 +34,9 @@ export interface AuditEntry {
   user?: string;
   /** Profile field names or commons keys — NAMES only, never values. */
   fields?: string[];
+  /** Token mints (tool `token:<provider>`): the connection slot, so per-tenant
+   * mints stay attributable (`acme_personal`, not just `token:google`). */
+  slot?: string;
   /** `capability`'s package.json version as read at mount (self-reported). */
   capability_version?: string;
   /** Peer-call rows (tool `call:<producer>__<tool>`): the producer and its version. */
