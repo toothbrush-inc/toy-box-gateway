@@ -31,6 +31,9 @@ import {
 import { BoundedEventStore } from "./event-store.js";
 import type { GoogleConnectFlow } from "./connect.js";
 import { SESSION_COOKIE, type GatewayOAuthProvider } from "./oauth/provider.js";
+
+/** Trusted identity header handed to fronted apps by Caddy's forward_auth `copy_headers`. */
+export const FORWARDED_USER_HEADER = "X-Forwarded-User";
 import { SessionManager } from "./sessions.js";
 
 export interface HttpGatewayOptions {
@@ -206,9 +209,14 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
     }
 
     // Caddy forward_auth target: 204 with a valid session, else redirect
-    // browsers to /login and 401 everything else.
+    // browsers to /login and 401 everything else. The verified email rides on
+    // the 204 as X-Forwarded-User so a route with `copy_headers` hands the
+    // fronted app a trusted identity (Caddy strips any client-supplied copy
+    // first). Apps that want per-user state read that header; the rest ignore it.
     app.get("/session/verify", (req: Request, res: Response) => {
-      if (oauth.verifySessionCookie(readCookie(req, SESSION_COOKIE)) !== null) {
+      const email = oauth.verifySessionCookie(readCookie(req, SESSION_COOKIE));
+      if (email !== null) {
+        res.setHeader(FORWARDED_USER_HEADER, email);
         res.status(204).end();
         return;
       }

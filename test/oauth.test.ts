@@ -295,8 +295,11 @@ describe("oauth authorization server", () => {
 
     const verifyOk = await fetch(`${harness.url}/session/verify`, { headers: { Cookie: cookie } });
     expect(verifyOk.status).toBe(204);
+    // The identity Caddy copies onto the fronted app's request.
+    expect(verifyOk.headers.get("x-forwarded-user")).toBe("dvd@thephotobase.com");
     const verifyMissing = await fetch(`${harness.url}/session/verify`);
     expect(verifyMissing.status).toBe(401);
+    expect(verifyMissing.headers.get("x-forwarded-user")).toBeNull();
     const verifyBrowser = await fetch(`${harness.url}/session/verify`, {
       headers: { Accept: "text/html", "X-Forwarded-Uri": "/dashboard" },
       redirect: "manual",
