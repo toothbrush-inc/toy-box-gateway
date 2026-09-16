@@ -58,21 +58,21 @@
       "badge": "beta",
       "accent": "marigold",
       "tagline": "Your reading list, owned by you.",
-      "description": "Turn your emails into a personalized reading feed with full-text content, semantic search, and smart link extraction.",
+      "description": "Turn your emails into a reading feed with full article text, search, and smart link extraction.",
       "highlights": [
-        "Email yourself a link and it shows up in your feed",
-        "Full article text, with the Wayback Machine as a fallback",
-        "Search and chat across everything you have saved"
+        "Email yourself a link; it lands in your feed",
+        "Full article text, with Wayback fallback",
+        "Search and chat across what you saved"
       ],
       "repo": "https://github.com/toothbrush-inc/mailfeed"
     }
   ],
   "store": {
-    "headline": "Small apps, made by hand, for people I know.",
-    "lede": "One sign-in, one place, and every app also works from your AI assistant.",
+    "name": "Toy Box",
+    "headline": "Daily apps to improve your day",
     "contact": {
       "email": "you@example.com",
-      "byline": "Built and run by one person"
+      "byline": "Built and run by DVD for family and friends"
     }
   }
 }

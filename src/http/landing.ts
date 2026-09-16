@@ -170,19 +170,29 @@ function toolsBlock(model: StoreModel): string {
   return `<div class="tool-groups">${groups}</div>`;
 }
 
+/** A Gmail compose link. The buttons use this rather than `mailto:`
+ * because a mailto link does nothing in a browser with no mail handler
+ * registered, which is the common case for people who read mail on the
+ * web; everyone here signs in with Google, so Gmail is the safe bet. The
+ * plain address is still shown, as a mailto link, for any other mail app. */
+function gmailCompose(to: string, subject: string): string {
+  return `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subject)}`;
+}
+
 function contactSection(model: StoreModel): string {
   const contact = model.store?.contact;
   if (contact === undefined) {
     return "";
   }
   const name = model.store?.name ?? model.host;
-  const suggest = `mailto:${esc(contact.email)}?subject=${encodeURIComponent(`App idea for ${name}`)}`;
-  const hello = `mailto:${esc(contact.email)}?subject=${encodeURIComponent(`Hello from ${name}`)}`;
+  const suggest = gmailCompose(contact.email, `App idea for ${name}`);
+  const hello = gmailCompose(contact.email, `Hello from ${name}`);
   return (
     `<section class="sec sec--contact"><h2 class="sec-title">Want something built?</h2>` +
     `<p class="sec-lede">Every app here started as a chore somebody kept doing by hand. If you have one of those, describe it in a paragraph. Bug reports, questions and hellos are welcome too.</p>` +
-    `<p class="actions"><a class="btn btn--solid" href="${suggest}">Suggest an app</a>` +
-    `<a class="btn" href="${hello}">Say hello</a></p>` +
+    `<p class="actions"><a class="btn btn--solid" href="${esc(suggest)}" target="_blank" rel="noopener">Suggest an app</a>` +
+    `<a class="btn" href="${esc(hello)}" target="_blank" rel="noopener">Say hello</a></p>` +
+    `<p class="contact-address">Both open Gmail. Any mail app works too: <a href="mailto:${esc(contact.email)}">${esc(contact.email)}</a></p>` +
     `</section>`
   );
 }
@@ -206,21 +216,16 @@ function topBar(model: StoreModel): string {
 export function renderStoreHtml(model: StoreModel): string {
   const name = model.store?.name ?? model.host;
   const headline = model.store?.headline ?? "Small apps, made by hand, for people I know.";
-  const lede =
-    model.store?.lede ??
-    "One sign-in, one place, and every app also works from your AI assistant. Open one below.";
-  // Said only when it is true of every tile: each app links to its source.
-  const openSource =
-    model.apps.length > 0 && model.apps.every((app) => app.repo !== undefined)
-      ? `<p class="hero-note">Every app here is open source. Use it here with one sign-in, or run it yourself.</p>`
-      : "";
-  const hero = `<header class="hero"><h1 class="headline">${esc(headline)}</h1><p class="lede">${esc(lede)}</p>${openSource}</header>`;
+  // The lede is optional: a headline that stands on its own gets no subtext.
+  const lede = model.store?.lede === undefined ? "" : `<p class="lede">${esc(model.store.lede)}</p>`;
+  const hero = `<header class="hero"><h1 class="headline">${esc(headline)}</h1>${lede}</header>`;
   const tiles =
     model.apps.length === 0
       ? `<p class="quiet">No apps are listed yet. The first one is on its way.</p>`
       : `<section class="tiles" aria-label="Apps">${model.apps.map((app, index) => tile(app, index, model)).join("")}</section>`;
   const byline = model.store?.contact?.byline;
-  const footer = `<footer class="foot"><span>${esc(byline ?? name)}</span><span>${esc(model.host)}</span></footer>`;
+  const year = String(new Date().getFullYear());
+  const footer = `<footer class="foot"><span>${esc(byline ?? name)}</span><span>© ${year} ${esc(name)}</span></footer>`;
   return (
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">` +
@@ -299,7 +304,8 @@ a.tile-cta::after{content:"";position:absolute;inset:0;border-radius:22px}
 .tile-repo{position:relative;z-index:1;color:var(--ink-2);font-size:14px;font-weight:500;text-decoration:underline;text-underline-offset:4px;text-decoration-color:color-mix(in srgb,var(--ink-2),transparent 50%)}
 .tile-repo:hover{color:var(--deep);text-decoration-color:currentColor}
 .tile-repo::after{content:" ↗";font-size:12px}
-.hero-note{margin:14px 0 0;font-size:15.5px;color:var(--muted);max-width:52ch}
+.contact-address{margin:14px 0 0;font-size:14.5px;color:var(--muted)}
+.contact-address a{color:var(--ink-2)}
 .sec{margin-top:64px;padding-top:28px;border-top:1px solid var(--hair);max-width:760px}
 .sec-title{margin:0;font:400 30px/1.15 var(--serif);letter-spacing:-.015em}
 .sec-lede{margin:12px 0 0;font-size:17px;line-height:1.55;color:var(--ink-2);max-width:60ch;text-wrap:pretty}
