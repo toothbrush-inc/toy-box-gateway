@@ -33,6 +33,19 @@ import type { OAuthDiskStore } from "./store.js";
 
 const PENDING_TTL_MS = 10 * 60 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
+/** Anyone can start a login, so the pending map is bounded: past this many
+ * in-flight attempts the oldest is dropped (its user starts over). */
+const MAX_PENDING = 5000;
+
+/**
+ * A post-login destination must stay on this origin. A single leading slash
+ * is required; a second slash OR a backslash is refused because browsers
+ * read `/\evil.example` as `//evil.example`, a protocol-relative URL — that
+ * is an open redirect, not a path.
+ */
+export function safeRelativePath(next: string): string | undefined {
+  return /^\/(?![/\\])/u.test(next) ? next : undefined;
+}
 export const SESSION_COOKIE = "gw_session";
 
 type Pending =
@@ -109,6 +122,13 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
 
   private newState(entry: Pending): string {
     this.prune();
+    while (this.pending.size >= MAX_PENDING) {
+      const oldest = this.pending.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      this.pending.delete(oldest);
+    }
     const state = randomBytes(24).toString("hex");
     this.pending.set(state, entry);
     return state;
@@ -136,7 +156,7 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
 
   /** Starts a browser (cookie) login; `next` must be a relative path. */
   startBrowserLogin(next: string): string {
-    const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/views";
+    const safeNext = safeRelativePath(next) ?? "/";
     const state = this.newState({ kind: "browser", next: safeNext, expiresAt: Date.now() + PENDING_TTL_MS });
     return googleLoginUrl(this.endpoints, this.options.google, this.googleRedirectUri(), state);
   }
@@ -294,7 +314,7 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
     return Promise.resolve();
   }
 
-  /** Browser-session check for /views and the Caddy forward_auth endpoint. */
+  /** Browser-session check for the store page and the Caddy forward_auth endpoint. */
   verifySessionCookie(value: string | undefined): string | null {
     if (value === undefined || value === "") {
       return null;

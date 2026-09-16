@@ -35,8 +35,22 @@ interface HttpHarness {
 
 async function startHarness(
   options: {
-    web?: { path: string; label: string; description?: string };
+    web?: {
+      path: string;
+      label: string;
+      tagline?: string;
+      description?: string;
+      highlights?: string[];
+      badge?: string;
+      accent?: "sky" | "leaf" | "marigold" | "plum" | "clay" | "slate";
+    };
     links?: { href: string; label: string; description?: string }[];
+    store?: {
+      name?: string;
+      headline?: string;
+      lede?: string;
+      contact?: { email: string; byline?: string };
+    };
   } = {},
 ): Promise<HttpHarness> {
   const dir = mkdtempSync(join(tmpdir(), "gateway-http-"));
@@ -59,6 +73,7 @@ async function startHarness(
       ],
       views: { dir: join(dir, "views") },
       ...(options.links === undefined ? {} : { links: options.links }),
+      ...(options.store === undefined ? {} : { store: options.store }),
       serve: {
         port: 0,
         host: "127.0.0.1",
@@ -86,6 +101,7 @@ async function startHarness(
     serve,
     verifier: staticTokenVerifier(tokens, serve.publicUrl),
     ...(options.links === undefined ? {} : { links: options.links }),
+    ...(options.store === undefined ? {} : { store: options.store }),
     log: () => undefined,
   });
   cleanups.push(async () => {
@@ -316,7 +332,7 @@ describe("parseBearerTokens", () => {
   });
 });
 
-describe("home index", () => {
+describe("store page", () => {
   async function getHome(
     harness: HttpHarness,
     accept: string,
@@ -330,28 +346,50 @@ describe("home index", () => {
     });
   }
 
-  it("lists an agent-only capability with what it can do", async () => {
-    const harness = await startHarness();
-    const response = await getHome(harness, "text/html");
+  it("is public, and the anonymous page is the catalogue only", async () => {
+    const harness = await startHarness({
+      web: { path: "/weather", label: "Weather", tagline: "Which forecast to trust" },
+    });
+    const response = await getHome(harness, "text/html", null);
     expect(response.status).toBe(200);
+    expect(response.headers.get("x-powered-by")).toBeNull();
     const html = await response.text();
-    // The point of the page: a capability with no web UI is still discoverable,
-    // and says what it can do rather than merely existing.
-    expect(html).toContain("weather");
-    expect(html).toContain("agent-only");
-    expect(html).toContain("echo");
-    expect(html).toContain("Echoes input");
+    expect(html).toContain('href="/weather"');
+    expect(html).toContain("Which forecast to trust");
+    expect(html).toContain("http://127.0.0.1/mcp");
+    // What is mounted underneath is not for anonymous readers.
+    expect(html).not.toContain("echo");
+    expect(html).not.toContain("Echoes input");
+    expect(html).not.toContain("not connected");
   });
 
-  it("links a capability that declares a web UI", async () => {
-    const harness = await startHarness({
-      web: { path: "/weather", label: "Weather", description: "Forecasts and history" },
-    });
+  it("shows a signed-in viewer what each capability can do", async () => {
+    const harness = await startHarness({ web: { path: "/weather", label: "Weather" } });
     const html = await (await getHome(harness, "text/html")).text();
-    expect(html).toContain('href="/weather"');
-    expect(html).toContain("Weather");
-    expect(html).toContain("Forecasts and history");
-    expect(html).not.toContain("agent-only");
+    expect(html).toContain("echo");
+    expect(html).toContain("Echoes input");
+    expect(html).toContain("Sign out");
+  });
+
+  it("renders the copy for a tile: tagline, reasons, badge", async () => {
+    const harness = await startHarness({
+      web: {
+        path: "/weather",
+        label: "Weather",
+        tagline: "Know which forecast to trust.",
+        description: "Three sources side by side.",
+        highlights: ["Air quality from a sensor near you", "A heads-up when tomorrow is odd"],
+        badge: "new",
+        accent: "sky",
+      },
+    });
+    const html = await (await getHome(harness, "text/html", null)).text();
+    expect(html).toContain("Know which forecast to trust.");
+    expect(html).toContain("Three sources side by side.");
+    expect(html).toContain("<li>Air quality from a sensor near you</li>");
+    expect(html).toContain('<span class="badge">new</span>');
+    expect(html).toContain("tile--sky");
+    expect(html).toContain("Open Weather");
   });
 
   it("links a sibling app that is not a mounted capability", async () => {
@@ -364,43 +402,67 @@ describe("home index", () => {
         },
       ],
     });
-    const html = await (await getHome(harness, "text/html")).text();
+    const html = await (await getHome(harness, "text/html", null)).text();
     expect(html).toContain('href="https://mail.example.com"');
     expect(html).toContain("MailFeed");
     expect(html).toContain("Reading feed from your inbox");
   });
 
-  it("serves the same facts as JSON", async () => {
+  it("uses the store block for the words above the tiles and the contact section", async () => {
+    const harness = await startHarness({
+      store: {
+        name: "Toys",
+        headline: "Little apps for the family.",
+        lede: "Sign in once.",
+        contact: { email: "hi@example.com", byline: "Built by D" },
+      },
+    });
+    const html = await (await getHome(harness, "text/html", null)).text();
+    expect(html).toContain("<title>Toys</title>");
+    expect(html).toContain("Little apps for the family.");
+    expect(html).toContain("Sign in once.");
+    expect(html).toContain("mailto:hi@example.com?subject=App%20idea%20for%20Toys");
+    expect(html).toContain("Suggest an app");
+    expect(html).toContain("Built by D");
+  });
+
+  it("hides the contact section when no contact is configured", async () => {
+    const harness = await startHarness();
+    const html = await (await getHome(harness, "text/html", null)).text();
+    expect(html).not.toContain("mailto:");
+    expect(html).not.toContain("Suggest an app");
+  });
+
+  it("serves the same facts as JSON, scoped to the viewer", async () => {
     const harness = await startHarness({ web: { path: "/weather", label: "Weather" } });
-    const response = await getHome(harness, "application/json");
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as {
+    type Body = {
       ok: boolean;
       data: {
-        capabilities: { id: string; state: string; tools: { name: string }[]; web?: { path: string } }[];
+        apps: { href: string; label: string }[];
         mcpUrl: string;
+        viewer?: { email: string };
+        capabilities?: { id: string; state: string; tools: { name: string }[] }[];
       };
     };
-    expect(body.ok).toBe(true);
-    const weather = body.data.capabilities.find((cap) => cap.id === "weather");
+    const anonymous = (await (await getHome(harness, "application/json", null)).json()) as Body;
+    expect(anonymous.ok).toBe(true);
+    expect(anonymous.data.apps.map((app) => app.href)).toEqual(["/weather"]);
+    expect(anonymous.data.mcpUrl).toBe("http://127.0.0.1/mcp");
+    expect(anonymous.data.capabilities).toBeUndefined();
+    expect(anonymous.data.viewer).toBeUndefined();
+
+    const signedIn = (await (await getHome(harness, "application/json")).json()) as Body;
+    const weather = signedIn.data.capabilities?.find((cap) => cap.id === "weather");
     expect(weather?.state).toBe("connected");
-    expect(weather?.web?.path).toBe("/weather");
     expect(weather?.tools.map((tool) => tool.name)).toContain("echo");
-    expect(body.data.mcpUrl).toBe("http://127.0.0.1/mcp");
   });
 
-  it("points at the MCP endpoint so the agent-only half is reachable", async () => {
+  it("refuses a bad bearer token rather than falling back to anonymous", async () => {
     const harness = await startHarness();
-    const html = await (await getHome(harness, "text/html")).text();
-    expect(html).toContain("http://127.0.0.1/mcp");
+    expect((await getHome(harness, "text/html", "not-a-token")).status).toBe(401);
   });
 
-  it("is not readable without auth", async () => {
-    const harness = await startHarness();
-    expect((await getHome(harness, "text/html", null)).status).toBe(401);
-  });
-
-  it("answers an unknown path with a themed 404, not the index", async () => {
+  it("answers an unknown path with a themed 404, not the store page", async () => {
     const harness = await startHarness();
     const response = await fetch(`${harness.url}/nope`, {
       headers: { accept: "text/html", Authorization: "Bearer secret-token-1" },
@@ -408,6 +470,7 @@ describe("home index", () => {
     expect(response.status).toBe(404);
     const html = await response.text();
     expect(html).toContain("Not found");
-    expect(html).not.toContain("agent-only");
+    expect(html).toContain('href="/"');
+    expect(html).not.toContain("Open Weather");
   });
 });

@@ -92,6 +92,14 @@ export {
   renderPreviewJson,
   renderViewsIndexHtml,
 } from "./views/render.js";
+export {
+  renderStoreHtml,
+  storeJson,
+  type StoreApp,
+  type StoreCapability,
+  type StoreModel,
+  type StoreViewer,
+} from "./http/landing.js";
 export { runTransform, TransformError, type TransformErrorKind } from "./views/sandbox.js";
 export {
   ViewsService,

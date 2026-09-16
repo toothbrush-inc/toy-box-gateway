@@ -68,6 +68,7 @@ async function runServe(args: readonly string[]): Promise<void> {
     serve,
     verifier: auth.verifier,
     ...(config.links.length === 0 ? {} : { links: config.links }),
+    ...(config.store === undefined ? {} : { store: config.store }),
     ...(auth.provider === undefined ? {} : { oauth: auth.provider }),
     ...(connect === undefined ? {} : { connect }),
   });

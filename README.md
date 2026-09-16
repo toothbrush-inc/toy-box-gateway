@@ -196,6 +196,23 @@ This is the hosted-security seam: locally the boundary is cooperative (a
 process under your OS user could still read the vault); hosted, the same
 capability code runs in a sandbox whose only network path is the broker.
 
+## The store page (`/`)
+
+In serve mode the root is a **public** landing page: every app with a web
+UI (a capability's `web` block) and every sibling app (`links`) as a tile,
+with the words from config — `label`, `tagline`, `description`, up to four
+`highlights`, an optional `badge` ("beta") and an `accent` colour. Above the
+tiles, the `store` block sets the wordmark (defaults to the public hostname),
+`headline`, `lede`, and `contact.email`, which powers the "Suggest an app" /
+"Say hello" buttons (omit `contact` to hide that section).
+
+What the anonymous reader gets is the catalogue and the MCP address, and
+nothing about the running system. A **signed-in** viewer — browser session
+or API bearer — also sees what is mounted: each capability's tools (so an
+agent-only capability is discoverable) and its health. `Accept: text/html`
+renders the page; anything else gets the same facts as JSON, scoped the same
+way. A bad bearer token is refused, not downgraded to anonymous.
+
 ## Views (converse → tune → pin → glance)
 
 A **view** is a pinned, compiled artifact authored in conversation: up to 8
