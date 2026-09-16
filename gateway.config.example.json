@@ -57,7 +57,13 @@
       "label": "MailFeed",
       "badge": "beta",
       "accent": "marigold",
-      "tagline": "The newsletters in your inbox, turned into a reading feed.",
+      "tagline": "Your reading list, owned by you.",
+      "description": "Turn your emails into a personalized reading feed with full-text content, semantic search, and smart link extraction.",
+      "highlights": [
+        "Email yourself a link and it shows up in your feed",
+        "Full article text, with the Wayback Machine as a fallback",
+        "Search and chat across everything you have saved"
+      ],
       "repo": "https://github.com/toothbrush-inc/mailfeed"
     }
   ],
