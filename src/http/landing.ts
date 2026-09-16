@@ -21,7 +21,9 @@ export interface StoreCapability {
   state: "connected" | "failed" | "closed";
   lastError: string | null;
   tools: readonly { name: string; description: string }[];
-  web?: { path: string; label: string } | undefined;
+  /** Resolved words: the manifest's `store` block, overridden by config. */
+  store: StoreCopy;
+  web?: { path: string } | undefined;
 }
 
 export interface StoreViewer {
@@ -108,7 +110,7 @@ function toolsBlock(model: StoreModel): string {
   }
   const groups = caps
     .map((cap) => {
-      const name = cap.web?.label ?? cap.id.charAt(0).toUpperCase() + cap.id.slice(1);
+      const name = cap.store.label;
       const up = cap.state === "connected";
       const health = up
         ? `<span class="health health--ok">${String(cap.tools.length)} ${cap.tools.length === 1 ? "tool" : "tools"}</span>`
@@ -160,8 +162,9 @@ function topBar(model: StoreModel): string {
 }
 
 /**
- * The store page. Tiles come from config (capabilities' `web` blocks and
- * `links`); the signed-in half is derived from what is actually mounted.
+ * The store page. Tiles come from each capability's resolved store words
+ * (its manifest `store` block, overridden by the config `web` block) plus
+ * config `links`; the signed-in half is derived from what is actually mounted.
  */
 export function renderStoreHtml(model: StoreModel): string {
   const name = model.store?.name ?? model.host;

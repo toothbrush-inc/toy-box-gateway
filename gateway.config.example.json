@@ -22,19 +22,7 @@
       ],
       "cwd": "/Users/dvd/code/davidd8/weather-compare",
       "manifestPath": "/Users/dvd/code/davidd8/weather-compare/capability.json",
-      "secretsAccess": "broker",
-      "web": {
-        "path": "/weather",
-        "label": "Weather",
-        "accent": "sky",
-        "tagline": "Know which forecast to trust before you plan the day.",
-        "description": "Three forecasts side by side for the places you follow, with a running score of who was right.",
-        "highlights": [
-          "Today’s high and low and the hour-by-hour shape",
-          "Air quality from a sensor near you",
-          "A heads-up when tomorrow is out of the ordinary"
-        ]
-      }
+      "secretsAccess": "broker"
     },
     {
       "id": "fitness",
@@ -69,7 +57,8 @@
       "label": "MailFeed",
       "badge": "beta",
       "accent": "marigold",
-      "tagline": "The newsletters in your inbox, turned into a reading feed."
+      "tagline": "The newsletters in your inbox, turned into a reading feed.",
+      "repo": "https://github.com/toothbrush-inc/mailfeed"
     }
   ],
   "store": {

@@ -242,6 +242,7 @@ describe("gateway", () => {
         { id: "weather:purpleair:default", connectionId: "purpleair:default", actions: ["read"] },
       ],
       egress: { enabled: false, hosts: [] },
+      store: { label: "Weather" },
     });
   });
 

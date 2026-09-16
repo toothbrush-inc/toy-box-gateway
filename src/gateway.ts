@@ -39,7 +39,7 @@ import {
   type ChildState,
   type TransportFactory,
 } from "./children.js";
-import { readCapabilityVersion, type CapabilitySpec, type GatewayConfig } from "./config.js";
+import { readCapabilityVersion, type CapabilitySpec, type GatewayConfig, type StoreCopy } from "./config.js";
 import {
   EgressServer,
   loadEgressSpecs,
@@ -53,6 +53,7 @@ import { evaluatePolicy } from "./policy.js";
 import { parsePrefixedName, ToolRegistry } from "./registry.js";
 import { redactErrorMessage } from "./redact.js";
 import { buildGatewayStatus } from "./status.js";
+import { resolveStoreEntries, type StoreEntry } from "./store-copy.js";
 import { viewUri } from "./views/model.js";
 import { renderCardJson } from "./views/render.js";
 import { ViewsService } from "./views/service.js";
@@ -172,7 +173,10 @@ export interface CapabilitySummary {
   lastError: string | null;
   /** Post-policy: denied tools are absent, as they are from tools/list. */
   tools: { name: string; description: string }[];
-  web?: { path: string; label: string; description?: string | undefined };
+  /** Resolved storefront words (manifest `store`, overridden by config `web`). */
+  store: StoreCopy;
+  /** Where the app's web UI is; absent for an agent-only capability. */
+  web?: { path: string };
 }
 
 /** Process-lifetime state: children, registry, audit, egress. One per gateway. */
@@ -281,6 +285,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
   const sessions = new Set<GatewaySession>();
 
   const egressSpecs = loadEgressSpecs(config.capabilities, log);
+  const storeEntries = resolveStoreEntries(config.capabilities, log);
   // Provenance: each capability's self-reported package.json version, read
   // once here and stamped into status and audit rows.
   const versionByCapability = new Map<string, string>();
@@ -466,13 +471,14 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
         byCapability.set(parsed.capabilityId, list);
       }
       return children.list().map((child) => {
-        const spec = specs.get(child.id);
+        const entry = storeEntries.get(child.id);
         return {
           id: child.id,
           state: child.state,
           lastError: child.lastError,
           tools: byCapability.get(child.id) ?? [],
-          ...(spec?.web === undefined ? {} : { web: spec.web }),
+          store: entry?.copy ?? { label: child.id },
+          ...(entry?.path === undefined ? {} : { web: { path: entry.path } }),
         };
       });
     },
@@ -583,6 +589,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
           },
           config.commons?.dir,
           (capabilityId) => versionByCapability.get(capabilityId) ?? null,
+          (capabilityId) => storeEntries.get(capabilityId),
         );
         record({ capability: "gateway", tool: name, outcome: "ok" });
         return jsonResult(status);
@@ -980,6 +987,20 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
   return core;
 }
 
+/** The agent's index of what is mounted: one line per app, in the app's own
+ * words (manifest `store`, overridden by config), so an assistant can tell a
+ * person what is here without calling a tool first. */
+export function appIndex(capabilities: readonly CapabilitySummary[]): string {
+  if (capabilities.length === 0) {
+    return "";
+  }
+  const lines = capabilities.map((cap) => {
+    const tagline = cap.store.tagline === undefined ? "" : `: ${cap.store.tagline}`;
+    return `${cap.id} (${cap.store.label})${tagline}`;
+  });
+  return ` Apps: ${lines.join("; ")}.`;
+}
+
 export function createGatewaySession(core: GatewayCore, identity: CallIdentity = {}): GatewaySession {
   const views = core.views;
   const server = new Server(
@@ -993,6 +1014,7 @@ export function createGatewaySession(core: GatewayCore, identity: CallIdentity =
         "Gateway over local capability MCP servers. Tools are namespaced as " +
         "<capability>__<tool>. Results are typed JSON ({ok,data} | {ok:false,error}). " +
         "Use gateway_status for health and gateway_reconnect to revive a crashed capability." +
+        appIndex(core.listCapabilities()) +
         (views === undefined
           ? ""
           : " Pinned views are served as view://<id> resources; author them with " +
