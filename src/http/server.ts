@@ -356,10 +356,9 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   // are for, never what the running system looks like.
   const storeApps = (): StoreApp[] => {
     const apps: StoreApp[] = [];
-    for (const spec of core.listCapabilities()) {
-      if (spec.web !== undefined) {
-        const { path, ...copy } = spec.web;
-        apps.push({ href: path, kind: "app", ...copy });
+    for (const cap of core.listCapabilities()) {
+      if (cap.web !== undefined) {
+        apps.push({ href: cap.web.path, kind: "app", ...cap.store });
       }
     }
     for (const link of options.links ?? []) {

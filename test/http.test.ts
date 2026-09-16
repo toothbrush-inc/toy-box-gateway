@@ -35,9 +35,10 @@ interface HttpHarness {
 
 async function startHarness(
   options: {
+    manifestStore?: Record<string, unknown>;
     web?: {
-      path: string;
-      label: string;
+      path?: string;
+      label?: string;
       tagline?: string;
       description?: string;
       highlights?: string[];
@@ -59,7 +60,12 @@ async function startHarness(
   const manifestPath = join(dir, "capability.json");
   writeFileSync(
     manifestPath,
-    JSON.stringify({ id: "weather", connections: [], tools: { query: ["echo"] } }),
+    JSON.stringify({
+      id: "weather",
+      connections: [],
+      tools: { query: ["echo"] },
+      ...(options.manifestStore === undefined ? {} : { store: options.manifestStore }),
+    }),
   );
   const config: GatewayConfig = {
     ...GatewayConfigSchema.parse({
@@ -390,6 +396,60 @@ describe("store page", () => {
     expect(html).toContain('<span class="badge">new</span>');
     expect(html).toContain("tile--sky");
     expect(html).toContain("Open Weather");
+  });
+
+  it("builds the tile from the manifest's store block, with config overriding per field", async () => {
+    const manifestStore = {
+      name: "Weather",
+      tagline: "Know which forecast to trust.",
+      description: "Three forecasts side by side.",
+      highlights: ["Air quality from a sensor near you"],
+      accent: "sky",
+      web: { path: "/weather" },
+      repo: "https://github.com/davidd8/weather-compare",
+    };
+    const fromManifest = await startHarness({ manifestStore });
+    const html = await (await getHome(fromManifest, "text/html", null)).text();
+    expect(html).toContain('href="/weather"');
+    expect(html).toContain("Open Weather");
+    expect(html).toContain("Know which forecast to trust.");
+    expect(html).toContain("<li>Air quality from a sensor near you</li>");
+    expect(html).toContain("tile--sky");
+    const json = (await (await getHome(fromManifest, "application/json", null)).json()) as {
+      data: { apps: Record<string, unknown>[] };
+    };
+    expect(json.data.apps[0]).toEqual({
+      href: "/weather",
+      kind: "app",
+      label: "Weather",
+      tagline: "Know which forecast to trust.",
+      description: "Three forecasts side by side.",
+      highlights: ["Air quality from a sensor near you"],
+      accent: "sky",
+      repo: "https://github.com/davidd8/weather-compare",
+    });
+
+    const overridden = await startHarness({
+      manifestStore,
+      web: { path: "/wx", tagline: "Hosted words.", badge: "beta" },
+    });
+    const html2 = await (await getHome(overridden, "text/html", null)).text();
+    expect(html2).toContain('href="/wx"');
+    expect(html2).toContain("Open Weather");
+    expect(html2).toContain("Hosted words.");
+    expect(html2).not.toContain("Know which forecast to trust.");
+    expect(html2).toContain("Three forecasts side by side.");
+    expect(html2).toContain('<span class="badge">beta</span>');
+  });
+
+  it("names a signed-in tool group from the manifest even when the app has no page", async () => {
+    const harness = await startHarness({ manifestStore: { name: "Wx Tools" } });
+    const anon = await (await getHome(harness, "text/html", null)).text();
+    expect(anon).not.toContain("Wx Tools");
+    expect(anon).toContain("No apps are listed yet");
+    const signedIn = await (await getHome(harness, "text/html")).text();
+    expect(signedIn).toContain("Wx Tools");
+    expect(signedIn).toContain("echo");
   });
 
   it("links a sibling app that is not a mounted capability", async () => {

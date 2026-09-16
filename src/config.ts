@@ -27,10 +27,29 @@ const StoreCopyShape = {
   /** A short status word shown on the tile ("beta", "new"). */
   badge: z.string().min(1).max(20).optional(),
   accent: z.enum(STORE_ACCENTS).optional(),
+  /** The open-source repository, for readers who want to run it themselves. */
+  repo: z.string().url().optional(),
 } as const;
 
 export const StoreCopySchema = z.object(StoreCopyShape);
 export type StoreCopy = z.infer<typeof StoreCopySchema>;
+
+const WEB_PATH = z.string().regex(/^\/[A-Za-z0-9/_-]*$/u, "web.path must be an absolute path");
+
+/** The `store` block of a capability.json: the app's own storefront words.
+ * Parsed here from the raw manifest (not through @local/vault) so a gateway
+ * built against an older vault still reads it. Same limits as the contract. */
+export const ManifestStoreSchema = z.object({
+  name: z.string().min(1).max(60),
+  tagline: StoreCopyShape.tagline,
+  description: StoreCopyShape.description,
+  highlights: StoreCopyShape.highlights,
+  badge: StoreCopyShape.badge,
+  accent: StoreCopyShape.accent,
+  web: z.object({ path: WEB_PATH }).optional(),
+  repo: StoreCopyShape.repo,
+});
+export type ManifestStore = z.infer<typeof ManifestStoreSchema>;
 
 export const CapabilitySpecSchema = z.object({
   id: z
@@ -46,14 +65,15 @@ export const CapabilitySpecSchema = z.object({
   denyTools: z.array(z.string().min(1)).optional(),
   manifestPath: z.string().min(1).optional(),
   secretsAccess: z.enum(["broker"]).optional(),
-  /** Where this capability's own web UI lives, when it has one. The gateway
-   * cannot infer this: a dashboard is a separate service, not the MCP child
-   * mounted here. Capabilities without it are agent-only: their tools show
-   * on the store page once someone has signed in. */
+  /** This deployment's overrides for the app's storefront words. The
+   * defaults come from the manifest's `store` block (name, tagline, ...,
+   * `web.path`); every field here wins over the manifest's, per field. A
+   * capability with no `path` from either source is agent-only: no tile, but
+   * its tools show on the store page once someone has signed in. */
   web: z
     .object({
-      path: z.string().regex(/^\/[A-Za-z0-9/_-]*$/u, "web.path must be an absolute path"),
-      ...StoreCopyShape,
+      path: WEB_PATH.optional(),
+      ...StoreCopySchema.partial().shape,
     })
     .optional(),
 }).refine((spec) => spec.secretsAccess === undefined || spec.manifestPath !== undefined, {

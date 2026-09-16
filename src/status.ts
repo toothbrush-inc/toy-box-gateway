@@ -10,7 +10,8 @@ import {
 } from "@local/vault";
 
 import type { ChildState, MountedCapability } from "./children.js";
-import type { CapabilitySpec } from "./config.js";
+import type { CapabilitySpec, StoreCopy } from "./config.js";
+import type { StoreEntry } from "./store-copy.js";
 
 export interface ManifestCheck {
   checked: boolean;
@@ -61,6 +62,9 @@ export interface CapabilityStatus {
   profile: CapabilityProfileStatus | null;
   commons: string[];
   peers: CapabilityPeerStatus[];
+  /** The app's storefront words as resolved for this deployment (manifest
+   * `store`, overridden by config `web`), and its web path when it has one. */
+  store: StoreCopy & { path?: string };
 }
 
 /** Warn-only: manifest problems never block mounting (per CAPABILITY.md). */
@@ -167,7 +171,15 @@ export function buildGatewayStatus(
   }),
   commonsDir?: string,
   versionOf: (capabilityId: string) => string | null = () => null,
+  storeOf: (capabilityId: string) => StoreEntry | undefined = () => undefined,
 ): { ok: true; data: { capabilities: CapabilityStatus[] } } {
+  const storeFor = (id: string): CapabilityStatus["store"] => {
+    const entry = storeOf(id);
+    if (entry === undefined) {
+      return { label: id };
+    }
+    return { ...entry.copy, ...(entry.path === undefined ? {} : { path: entry.path }) };
+  };
   const capabilities: CapabilityStatus[] = mounted.map((child) => {
     const spec = specs.get(child.id);
     const denied = deniedTools(child.id);
@@ -190,6 +202,7 @@ export function buildGatewayStatus(
       profile: data.profile,
       commons: data.commons,
       peers: data.peers,
+      store: storeFor(child.id),
     };
   });
   return { ok: true, data: { capabilities } };
