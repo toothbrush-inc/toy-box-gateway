@@ -134,8 +134,12 @@ export class GoogleConnectFlow {
       scope: this.options.scopes.join(" "),
       // offline + consent is what makes Google return a refresh token; the
       // broker mints everything after this from that one credential.
+      // select_account: the calendar being connected often belongs to a
+      // different Google account than the one signed in to the store (a
+      // work calendar), so always offer the chooser rather than silently
+      // reusing whichever account Google has in front.
       access_type: "offline",
-      prompt: "consent",
+      prompt: "consent select_account",
       state,
       code_challenge: createHash("sha256").update(verifier).digest("base64url"),
       code_challenge_method: "S256",
