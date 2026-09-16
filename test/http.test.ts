@@ -534,8 +534,10 @@ describe("store page", () => {
     expect(html).toContain("Sign in once.");
     // The buttons compose in Gmail (a mailto does nothing without a mail
     // handler); the address itself stays a mailto link for other mail apps.
+    // The link is Gmail's final compose URL, not the legacy `?view=cm`
+    // form whose redirect chain can loop (ERR_TOO_MANY_REDIRECTS).
     expect(html).toContain(
-      'href="https://mail.google.com/mail/?view=cm&amp;fs=1&amp;to=hi%40example.com&amp;su=App%20idea%20for%20Toys" target="_blank" rel="noopener">Suggest an app</a>',
+      'href="https://mail.google.com/mail/u/0/?fs=1&amp;tf=cm&amp;to=hi%40example.com&amp;su=App%20idea%20for%20Toys" target="_blank" rel="noopener">Suggest an app</a>',
     );
     expect(html).toContain('<a href="mailto:hi@example.com">hi@example.com</a>');
     expect(html).toContain("Built by D");
