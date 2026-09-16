@@ -198,9 +198,16 @@ export function renderPreviewJson(preview: ViewPreview): Record<string, unknown>
 }
 
 /** A plain message page in the same dress (expired preview, and the like). */
-export function renderNoticeHtml(title: string, message: string): string {
+export function renderNoticeHtml(
+  title: string,
+  message: string,
+  link?: { href: string; label: string },
+): string {
   const nav = `<nav class="top">${INDEX_NAV}</nav>`;
-  const body = `<header class="masthead"><h1>${esc(title)}</h1></header><p class="empty">${esc(message)}</p>`;
+  const back =
+    link === undefined ? "" : `<p class="more"><a href="${esc(link.href)}">${esc(link.label)}</a></p>`;
+  const body =
+    `<header class="masthead"><h1>${esc(title)}</h1></header><p class="empty">${esc(message)}</p>` + back;
   return page(title, nav + body, "page--single");
 }
 

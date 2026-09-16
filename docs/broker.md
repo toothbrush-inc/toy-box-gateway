@@ -51,6 +51,10 @@ endpoint via `VAULT_EGRESS_URL` + a per-capability `VAULT_EGRESS_TOKEN`:
   `VAULT_SECRETS_ACCESS=broker`, making fetch-path vault reads throw so a
   code path that bypasses the broker fails loudly. Masked status reads keep
   working.
+  Add `&next=<url>` and the person is sent back there after consent (with
+  `?connected=<slot>` appended), or, if it failed, the failure page links
+  back. `next` must be a path or an https URL on this host or a subdomain;
+  anything else is ignored and the plain notice page shows.
 
 This is the hosted-security seam: locally the boundary is cooperative (a
 process under your OS user could still read the vault); hosted, the same

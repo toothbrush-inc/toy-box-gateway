@@ -12,6 +12,8 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { connectionId, openVault, type Vault } from "@local/vault";
 
+import { safeNext } from "./oauth/provider.js";
+
 import {
   slotMatchesDeclared,
   type CapabilityEgressInfo,
@@ -47,13 +49,15 @@ export type ConnectStart =
   | { ok: false; message: string };
 
 export type ConnectResult =
-  | { ok: true; slot: string; granted: GrantTarget[] }
-  | { ok: false; message: string };
+  | { ok: true; slot: string; granted: GrantTarget[]; next?: string | undefined }
+  | { ok: false; message: string; next?: string | undefined };
 
 interface PendingConnect {
   slot: string;
   verifier: string;
   expiresAtMs: number;
+  /** Where to send the person afterwards (the app that started this). */
+  next?: string | undefined;
 }
 
 export class GoogleConnectFlow {
@@ -87,8 +91,16 @@ export class GoogleConnectFlow {
     return targets;
   }
 
-  start(rawSlot: unknown): ConnectStart {
+  /**
+   * `next`, when given, is where the person goes after consent — the setup
+   * page that sent them, so they can see the connection land. It must be on
+   * this site (a path, or https on this host or a subdomain of it); anything
+   * else is dropped and the plain notice page shows instead.
+   */
+  start(rawSlot: unknown, rawNext?: unknown): ConnectStart {
     const slot = typeof rawSlot === "string" ? rawSlot.trim().toLowerCase() : "";
+    const next =
+      typeof rawNext === "string" ? safeNext(rawNext, new URL(this.options.publicUrl).hostname) : undefined;
     if (slot === "" || !SLOT_TOKEN.test(slot)) {
       return {
         ok: false,
@@ -108,7 +120,12 @@ export class GoogleConnectFlow {
     }
     const state = randomBytes(16).toString("hex");
     const verifier = randomBytes(32).toString("base64url");
-    this.pending.set(state, { slot, verifier, expiresAtMs: this.now() + STATE_TTL_MS });
+    this.pending.set(state, {
+      slot,
+      verifier,
+      expiresAtMs: this.now() + STATE_TTL_MS,
+      ...(next === undefined ? {} : { next }),
+    });
     const url = new URL(this.options.authorizeUrl ?? DEFAULT_AUTHORIZE_URL);
     url.search = new URLSearchParams({
       client_id: this.options.creds.clientId,
@@ -131,18 +148,19 @@ export class GoogleConnectFlow {
     code?: string | undefined;
     error?: string | undefined;
   }): Promise<ConnectResult> {
-    if (query.error !== undefined) {
-      return { ok: false, message: `Google returned an error: ${query.error}` };
-    }
     const entry = query.state === undefined ? undefined : this.pending.get(query.state);
     if (query.state !== undefined) {
       this.pending.delete(query.state);
+    }
+    const next = entry?.next;
+    if (query.error !== undefined) {
+      return { ok: false, message: `Google returned an error: ${query.error}`, next };
     }
     if (entry === undefined || entry.expiresAtMs <= this.now()) {
       return { ok: false, message: "unknown or expired connect attempt; start over" };
     }
     if (query.code === undefined || query.code === "") {
-      return { ok: false, message: "Google returned no authorization code" };
+      return { ok: false, message: "Google returned no authorization code", next };
     }
 
     let exchange: Response;
@@ -161,7 +179,7 @@ export class GoogleConnectFlow {
         }).toString(),
       });
     } catch {
-      return { ok: false, message: "the token exchange with Google failed; try again" };
+      return { ok: false, message: "the token exchange with Google failed; try again", next };
     }
     let payload: { refresh_token?: unknown } = {};
     try {
@@ -175,6 +193,7 @@ export class GoogleConnectFlow {
         message: exchange.ok
           ? "Google returned no refresh token; remove this app's prior grant at myaccount.google.com/permissions and try again"
           : `token exchange returned HTTP ${String(exchange.status)}`,
+        next,
       };
     }
 
@@ -183,6 +202,7 @@ export class GoogleConnectFlow {
       return {
         ok: false,
         message: `no capability declares a google connection matching slot '${entry.slot}' anymore`,
+        next,
       };
     }
     await this.vault.putSecret({
@@ -205,7 +225,7 @@ export class GoogleConnectFlow {
         .map((target) => target.capability)
         .join(", ")}`,
     );
-    return { ok: true, slot: entry.slot, granted };
+    return { ok: true, slot: entry.slot, granted, next };
   }
 
   private prune(): void {
