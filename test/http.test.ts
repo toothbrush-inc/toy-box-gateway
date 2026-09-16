@@ -471,25 +471,22 @@ describe("store page", () => {
     const mailTile = html.slice(html.indexOf("MailFeed"));
     expect(mailTile).toContain('<ul class="chips"><li>Web app</li><li>Open source</li></ul>');
     expect(mailTile).toContain('<a class="tile-cta" href="https://mail.example.com">Open MailFeed</a>');
-    // Every tile has a repo, so the hero may say so.
-    expect(html).toContain("Every app here is open source.");
 
     const json = (await (await getHome(harness, "application/json", null)).json()) as {
       data: { apps: Record<string, unknown>[] };
     };
-    expect(json.data.apps.map((app) => [app.kind, app.href, app.repo])).toEqual([
+    expect(json.data.apps.map((app) => [app["kind"], app["href"], app["repo"]])).toEqual([
       ["app", undefined, "https://github.com/davidd8/calsync"],
       ["link", "https://mail.example.com", "https://github.com/toothbrush-inc/mailfeed"],
     ]);
   });
 
-  it("stays quiet about open source when a tile has no repo, and about tools when a link has none", async () => {
+  it("stays quiet about a repo when a tile has none, and about tools when a link has none", async () => {
     const harness = await startHarness({
       web: { path: "/weather", label: "Weather" },
       links: [{ href: "https://mail.example.com", label: "MailFeed" }],
     });
     const html = await (await getHome(harness, "text/html", null)).text();
-    expect(html).not.toContain("Every app here is open source.");
     expect(html).not.toContain("Run it yourself");
     expect(html).toContain('<ul class="chips"><li>Web app</li><li>Works with your assistant</li></ul>');
     expect(html).toContain('<ul class="chips"><li>Web app</li></ul>');
@@ -532,11 +529,26 @@ describe("store page", () => {
     });
     const html = await (await getHome(harness, "text/html", null)).text();
     expect(html).toContain("<title>Toys</title>");
+    expect(html).toContain('class="wordmark" href="/">Toys</a>');
     expect(html).toContain("Little apps for the family.");
     expect(html).toContain("Sign in once.");
-    expect(html).toContain("mailto:hi@example.com?subject=App%20idea%20for%20Toys");
-    expect(html).toContain("Suggest an app");
+    // The buttons compose in Gmail (a mailto does nothing without a mail
+    // handler); the address itself stays a mailto link for other mail apps.
+    expect(html).toContain(
+      'href="https://mail.google.com/mail/?view=cm&amp;fs=1&amp;to=hi%40example.com&amp;su=App%20idea%20for%20Toys" target="_blank" rel="noopener">Suggest an app</a>',
+    );
+    expect(html).toContain('<a href="mailto:hi@example.com">hi@example.com</a>');
     expect(html).toContain("Built by D");
+    expect(html).toContain(`<span>© ${String(new Date().getFullYear())} Toys</span>`);
+  });
+
+  it("shows no subtext when the store block sets a headline without a lede", async () => {
+    const harness = await startHarness({ store: { name: "Toy Box", headline: "Daily apps to improve your day" } });
+    const html = await (await getHome(harness, "text/html", null)).text();
+    expect(html).toContain('<h1 class="headline">Daily apps to improve your day</h1></header>');
+    expect(html).not.toContain('class="lede"');
+    expect(html).toContain("<span>© ");
+    expect(html).not.toContain("<span>127.0.0.1</span>");
   });
 
   it("hides the contact section when no contact is configured", async () => {

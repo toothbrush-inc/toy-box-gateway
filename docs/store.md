@@ -15,11 +15,16 @@ mounted capability (so its tools come through the MCP address), and **Open
 source** when it has a `repo`. The primary action is "Open <name>" for an
 app with a page, or "Use from your assistant" (a jump to the assistant
 section) for an agent-only capability; a `repo` adds a "Run it yourself"
-link beside it. When every tile has a `repo`, the hero adds one line saying
-so: every app here is open source, use it here or run it yourself. Above the
-tiles, the `store` block sets the wordmark (defaults to the public hostname),
-`headline`, `lede`, and `contact.email`, which powers the "Suggest an app" /
-"Say hello" buttons (omit `contact` to hide that section).
+link beside it.
+
+Above the tiles, the `store` block sets the wordmark (`name`, defaulting to
+the public hostname), the `headline`, an optional `lede` under it (omit it
+for no subtext), and `contact.email`, which powers the "Suggest an app" /
+"Say hello" buttons (omit `contact` to hide that section). The buttons open
+a Gmail compose window rather than a `mailto:` link, because a mailto does
+nothing in a browser with no mail handler registered; the address itself is
+shown beside them as a mailto link for any other mail app. The footer shows
+`contact.byline` on the left and "© <year> <name>" on the right.
 
 What the anonymous reader gets is the catalogue and the MCP address, and
 nothing about the running system. A **signed-in** viewer — browser session
