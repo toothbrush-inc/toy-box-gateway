@@ -45,7 +45,7 @@ async function startHarness(
       badge?: string;
       accent?: "sky" | "leaf" | "marigold" | "plum" | "clay" | "slate";
     };
-    links?: { href: string; label: string; description?: string }[];
+    links?: { href: string; label: string; description?: string; repo?: string }[];
     store?: {
       name?: string;
       headline?: string;
@@ -440,6 +440,59 @@ describe("store page", () => {
     expect(html2).not.toContain("Know which forecast to trust.");
     expect(html2).toContain("Three forecasts side by side.");
     expect(html2).toContain('<span class="badge">beta</span>');
+  });
+
+  it("shows how each app can be used: chips, a repo link, and a tile for an agent-only app", async () => {
+    const harness = await startHarness({
+      manifestStore: {
+        name: "calsync",
+        tagline: "Two calendars. One schedule.",
+        repo: "https://github.com/davidd8/calsync",
+      },
+      links: [
+        {
+          href: "https://mail.example.com",
+          label: "MailFeed",
+          description: "Reading feed from your inbox",
+          repo: "https://github.com/toothbrush-inc/mailfeed",
+        },
+      ],
+    });
+    const html = await (await getHome(harness, "text/html", null)).text();
+    // The agent-only capability gets a tile that points at the assistant section.
+    expect(html).toContain("Two calendars. One schedule.");
+    expect(html).toContain('<a class="tile-cta" href="#assistant">Use from your assistant</a>');
+    expect(html).not.toContain("Open calsync");
+    expect(html).toContain('<section class="sec sec--agent" id="assistant">');
+    // Chips say what each tile is, and the repo link says where to get it.
+    const calsyncTile = html.slice(html.indexOf("Two calendars"), html.indexOf("MailFeed"));
+    expect(calsyncTile).toContain('<ul class="chips"><li>Works with your assistant</li><li>Open source</li></ul>');
+    expect(calsyncTile).toContain('href="https://github.com/davidd8/calsync" rel="noopener">Run it yourself</a>');
+    const mailTile = html.slice(html.indexOf("MailFeed"));
+    expect(mailTile).toContain('<ul class="chips"><li>Web app</li><li>Open source</li></ul>');
+    expect(mailTile).toContain('<a class="tile-cta" href="https://mail.example.com">Open MailFeed</a>');
+    // Every tile has a repo, so the hero may say so.
+    expect(html).toContain("Every app here is open source.");
+
+    const json = (await (await getHome(harness, "application/json", null)).json()) as {
+      data: { apps: Record<string, unknown>[] };
+    };
+    expect(json.data.apps.map((app) => [app.kind, app.href, app.repo])).toEqual([
+      ["app", undefined, "https://github.com/davidd8/calsync"],
+      ["link", "https://mail.example.com", "https://github.com/toothbrush-inc/mailfeed"],
+    ]);
+  });
+
+  it("stays quiet about open source when a tile has no repo, and about tools when a link has none", async () => {
+    const harness = await startHarness({
+      web: { path: "/weather", label: "Weather" },
+      links: [{ href: "https://mail.example.com", label: "MailFeed" }],
+    });
+    const html = await (await getHome(harness, "text/html", null)).text();
+    expect(html).not.toContain("Every app here is open source.");
+    expect(html).not.toContain("Run it yourself");
+    expect(html).toContain('<ul class="chips"><li>Web app</li><li>Works with your assistant</li></ul>');
+    expect(html).toContain('<ul class="chips"><li>Web app</li></ul>');
   });
 
   it("names a signed-in tool group from the manifest even when the app has no page", async () => {
