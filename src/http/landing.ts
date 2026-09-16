@@ -170,19 +170,9 @@ function toolsBlock(model: StoreModel): string {
   return `<div class="tool-groups">${groups}</div>`;
 }
 
-/** A Gmail compose link. The buttons use this rather than `mailto:`
- * because a mailto link does nothing in a browser with no mail handler
- * registered, which is the common case for people who read mail on the
- * web; everyone here signs in with Google, so Gmail is the safe bet. The
- * plain address is still shown, as a mailto link, for any other mail app.
- *
- * This is the URL Gmail itself lands on after resolving its older forms
- * (`?view=cm`, `?extsrc=mailto`). Linking to it directly skips that
- * redirect chain, which on some sessions loops until Chrome gives up with
- * ERR_TOO_MANY_REDIRECTS. `/u/0/` is the first signed-in account; Gmail
- * offers a switch if that account is the wrong one. */
-function gmailCompose(to: string, subject: string): string {
-  return `https://mail.google.com/mail/u/0/?fs=1&tf=cm&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subject)}`;
+/** A mailto link with the subject prefilled. */
+function mailto(to: string, subject: string): string {
+  return `mailto:${to}?subject=${encodeURIComponent(subject)}`;
 }
 
 function contactSection(model: StoreModel): string {
@@ -191,14 +181,14 @@ function contactSection(model: StoreModel): string {
     return "";
   }
   const name = model.store?.name ?? model.host;
-  const suggest = gmailCompose(contact.email, `App idea for ${name}`);
-  const hello = gmailCompose(contact.email, `Hello from ${name}`);
+  const suggest = mailto(contact.email, `App idea for ${name}`);
+  const hello = mailto(contact.email, `Hello from ${name}`);
   return (
     `<section class="sec sec--contact"><h2 class="sec-title">Want something built?</h2>` +
     `<p class="sec-lede">Every app here started as a chore somebody kept doing by hand. If you have one of those, describe it in a paragraph. Bug reports, questions and hellos are welcome too.</p>` +
-    `<p class="actions"><a class="btn btn--solid" href="${esc(suggest)}" target="_blank" rel="noopener">Suggest an app</a>` +
-    `<a class="btn" href="${esc(hello)}" target="_blank" rel="noopener">Say hello</a></p>` +
-    `<p class="contact-address">Both open Gmail. Any mail app works too: <a href="mailto:${esc(contact.email)}">${esc(contact.email)}</a></p>` +
+    `<p class="actions"><a class="btn btn--solid" href="${esc(suggest)}">Suggest an app</a>` +
+    `<a class="btn" href="${esc(hello)}">Say hello</a></p>` +
+    `<p class="contact-address">Or write to <a href="mailto:${esc(contact.email)}">${esc(contact.email)}</a></p>` +
     `</section>`
   );
 }
