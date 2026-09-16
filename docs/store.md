@@ -2,12 +2,21 @@ Part of the [capability-gateway docs](../README.md#what-is-in-the-box). Back to 
 
 # The store page (`/`)
 
-In serve mode the root is a **public** landing page: every app with a web
-UI (a capability's `web` block) and every sibling app (`links`) as a tile,
-with a name (`label`), a `tagline`, a `description`, up to four
+In serve mode the root is a **public** landing page: every mounted
+capability that has a page or a pitch, and every sibling app (`links`), as a
+tile, with a name (`label`), a `tagline`, a `description`, up to four
 `highlights`, an optional `badge` ("beta") and an `accent` colour. The words
 come from the app's manifest, the gateway config, or both; see
-[Where the words come from](#where-the-words-come-from) below. Above the
+[Where the words come from](#where-the-words-come-from) below.
+
+Under the copy, each tile says how the app can be used, as small chips:
+**Web app** when it has a page, **Works with your assistant** when it is a
+mounted capability (so its tools come through the MCP address), and **Open
+source** when it has a `repo`. The primary action is "Open <name>" for an
+app with a page, or "Use from your assistant" (a jump to the assistant
+section) for an agent-only capability; a `repo` adds a "Run it yourself"
+link beside it. When every tile has a `repo`, the hero adds one line saying
+so: every app here is open source, use it here or run it yourself. Above the
 tiles, the `store` block sets the wordmark (defaults to the public hostname),
 `headline`, `lede`, and `contact.email`, which powers the "Suggest an app" /
 "Say hello" buttons (omit `contact` to hide that section).
@@ -57,11 +66,13 @@ The manifest block, exactly:
 Resolution rules:
 
 - **Path.** Config `web.path` wins over manifest `store.web.path`. A
-  capability with no path from either source gets no tile: that is the normal
-  shape for an agent-only app (a manifest `store` block without `web`), and
-  its tools still show on the signed-in page under its name, so it is never
-  invisible. A config `web` block that carries copy but no path, with no path
-  in the manifest either, is probably a mistake and gets a warning on stderr.
+  capability with no path from either source is agent-only: it still gets a
+  tile when it has a `tagline` (the normal shape for a manifest `store` block
+  without `web`), with "Use from your assistant" as its action, and its tools
+  show on the signed-in page under its name. A capability with neither a path
+  nor a tagline stays off the public page. A config `web` block that carries
+  copy but no path, with no path in the manifest either, gets a warning on
+  stderr.
 - **Every other field** is config-over-manifest, per field. A config `web`
   block that sets only `badge: "beta"` keeps the manifest's name, tagline,
   description and highlights and adds the badge.

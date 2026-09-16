@@ -7,11 +7,16 @@
 import { STORE_ACCENTS, type StoreAccent, type StoreConfig, type StoreCopy } from "../config.js";
 import { esc } from "../views/text.js";
 
-/** One tile. `href` is where "Open" goes; the copy comes from config. */
+/** One tile. The copy is the app's resolved store words (manifest `store`
+ * block, config overrides); `href` is where "Open" goes. A capability with
+ * words but no web path is agent-only: it still gets a tile, whose call to
+ * action points at the assistant section instead of a page. */
 export interface StoreApp extends StoreCopy {
-  href: string;
-  /** "app" opens under this domain; "link" is a sibling on its own host. */
+  /** "app" is a mounted capability (tools for the assistant, and a page
+   * under this domain when `href` is set); "link" is a sibling web app on
+   * its own host, with no tools here. */
   kind: "app" | "link";
+  href?: string | undefined;
 }
 
 /** Shape the signed-in half needs. Declared structurally rather than
@@ -69,7 +74,38 @@ function accentFor(app: StoreApp, index: number): StoreAccent {
   return app.accent ?? STORE_ACCENTS[index % STORE_ACCENTS.length] ?? "sky";
 }
 
-function tile(app: StoreApp, index: number): string {
+/** The small facts under the copy: how you can use this app. */
+function chips(app: StoreApp): string {
+  const items: string[] = [];
+  if (app.href !== undefined) {
+    items.push("Web app");
+  }
+  if (app.kind === "app") {
+    items.push("Works with your assistant");
+  }
+  if (app.repo !== undefined) {
+    items.push("Open source");
+  }
+  return `<ul class="chips">${items.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>`;
+}
+
+/** Primary action: open the page, or, for an agent-only app, go to the
+ * assistant section. Secondary: the source repo, for running it yourself. */
+function actions(app: StoreApp, model: StoreModel): string {
+  const primary =
+    app.href !== undefined
+      ? `<a class="tile-cta" href="${esc(app.href)}">Open ${esc(app.label)}</a>`
+      : model.mcpUrl !== undefined
+        ? `<a class="tile-cta" href="#assistant">Use from your assistant</a>`
+        : `<span class="tile-cta">Use from your assistant</span>`;
+  const repo =
+    app.repo === undefined
+      ? ""
+      : `<a class="tile-repo" href="${esc(app.repo)}" rel="noopener">Run it yourself</a>`;
+  return `<div class="tile-actions">${primary}${repo}</div>`;
+}
+
+function tile(app: StoreApp, index: number, model: StoreModel): string {
   const badge = app.badge === undefined ? "" : `<span class="badge">${esc(app.badge)}</span>`;
   const tagline = app.tagline === undefined ? "" : `<p class="tile-tag">${esc(app.tagline)}</p>`;
   const description = app.description === undefined ? "" : `<p class="tile-desc">${esc(app.description)}</p>`;
@@ -83,7 +119,8 @@ function tile(app: StoreApp, index: number): string {
     tagline +
     description +
     points +
-    `<a class="tile-cta" href="${esc(app.href)}">Open ${esc(app.label)}</a>` +
+    chips(app) +
+    actions(app, model) +
     `</article>`
   );
 }
@@ -97,7 +134,7 @@ function agentSection(model: StoreModel): string {
     ? `<p class="sec-lede">Every app here is also a set of tools your assistant can call. Add the address below as an MCP server in Claude or Claude Code, sign in with the same Google account, and the tools show up in chat. No key to copy.</p>`
     : `<p class="sec-lede">Every app here is also a set of tools your assistant can call. Add the address below as an MCP server in Claude or Claude Code and sign in when it asks. Sign in here to see what each app can do.</p>`;
   const url = `<pre class="url"><code>${esc(model.mcpUrl)}</code></pre>`;
-  return `<section class="sec sec--agent"><h2 class="sec-title">Works with your assistant</h2>${intro}${url}${toolsBlock(model)}</section>`;
+  return `<section class="sec sec--agent" id="assistant"><h2 class="sec-title">Works with your assistant</h2>${intro}${url}${toolsBlock(model)}</section>`;
 }
 
 function toolsBlock(model: StoreModel): string {
@@ -172,11 +209,16 @@ export function renderStoreHtml(model: StoreModel): string {
   const lede =
     model.store?.lede ??
     "One sign-in, one place, and every app also works from your AI assistant. Open one below.";
-  const hero = `<header class="hero"><h1 class="headline">${esc(headline)}</h1><p class="lede">${esc(lede)}</p></header>`;
+  // Said only when it is true of every tile: each app links to its source.
+  const openSource =
+    model.apps.length > 0 && model.apps.every((app) => app.repo !== undefined)
+      ? `<p class="hero-note">Every app here is open source. Use it here with one sign-in, or run it yourself.</p>`
+      : "";
+  const hero = `<header class="hero"><h1 class="headline">${esc(headline)}</h1><p class="lede">${esc(lede)}</p>${openSource}</header>`;
   const tiles =
     model.apps.length === 0
       ? `<p class="quiet">No apps are listed yet. The first one is on its way.</p>`
-      : `<section class="tiles" aria-label="Apps">${model.apps.map((app, index) => tile(app, index)).join("")}</section>`;
+      : `<section class="tiles" aria-label="Apps">${model.apps.map((app, index) => tile(app, index, model)).join("")}</section>`;
   const byline = model.store?.contact?.byline;
   const footer = `<footer class="foot"><span>${esc(byline ?? name)}</span><span>${esc(model.host)}</span></footer>`;
   return (
@@ -248,9 +290,16 @@ a{color:var(--link)}
 .tile-points{margin:2px 0 0;padding:0 0 0 18px;font-size:15px;line-height:1.5;color:var(--ink)}
 .tile-points li{margin:4px 0}
 .tile-points li::marker{color:var(--deep)}
-.tile-cta{margin-top:auto;padding-top:12px;align-self:flex-start;color:var(--deep);font-weight:600;font-size:16px;text-decoration:none;text-underline-offset:4px}
-.tile-cta::after{content:"";position:absolute;inset:0;border-radius:22px}
-.tile:hover .tile-cta{text-decoration:underline}
+.chips{list-style:none;margin:4px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.chips li{padding:3px 10px;border:1px solid color-mix(in srgb,var(--deep),transparent 65%);border-radius:999px;color:var(--deep);font-size:12.5px;font-weight:500;line-height:1.4}
+.tile-actions{margin-top:auto;padding-top:12px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.tile-cta{color:var(--deep);font-weight:600;font-size:16px;text-decoration:none;text-underline-offset:4px}
+a.tile-cta::after{content:"";position:absolute;inset:0;border-radius:22px}
+.tile:hover a.tile-cta{text-decoration:underline}
+.tile-repo{position:relative;z-index:1;color:var(--ink-2);font-size:14px;font-weight:500;text-decoration:underline;text-underline-offset:4px;text-decoration-color:color-mix(in srgb,var(--ink-2),transparent 50%)}
+.tile-repo:hover{color:var(--deep);text-decoration-color:currentColor}
+.tile-repo::after{content:" ↗";font-size:12px}
+.hero-note{margin:14px 0 0;font-size:15.5px;color:var(--muted);max-width:52ch}
 .sec{margin-top:64px;padding-top:28px;border-top:1px solid var(--hair);max-width:760px}
 .sec-title{margin:0;font:400 30px/1.15 var(--serif);letter-spacing:-.015em}
 .sec-lede{margin:12px 0 0;font-size:17px;line-height:1.55;color:var(--ink-2);max-width:60ch;text-wrap:pretty}
@@ -270,5 +319,5 @@ a{color:var(--link)}
 .foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:72px;padding-top:18px;border-top:1px solid var(--hair);font-size:13.5px;color:var(--muted)}
 @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.tile{animation:none}}
-@media (max-width:520px){.store{padding:14px 16px 40px}.who{max-width:18ch}.hero{padding:40px 0 28px}.tile{padding:22px 20px 20px;border-radius:18px}.tile-cta::after{border-radius:18px}.tile-name{font-size:30px}.sec{margin-top:48px}}
+@media (max-width:520px){.store{padding:14px 16px 40px}.who{max-width:18ch}.hero{padding:40px 0 28px}.tile{padding:22px 20px 20px;border-radius:18px}a.tile-cta::after{border-radius:18px}.tile-name{font-size:30px}.sec{margin-top:48px}}
 `.trim();

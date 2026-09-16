@@ -357,8 +357,13 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   const storeApps = (): StoreApp[] => {
     const apps: StoreApp[] = [];
     for (const cap of core.listCapabilities()) {
+      // A tile needs a page or at least a pitch; a capability with neither
+      // (no manifest store block, no config copy) stays off the public
+      // page and shows only in the signed-in tools list.
       if (cap.web !== undefined) {
-        apps.push({ href: cap.web.path, kind: "app", ...cap.store });
+        apps.push({ kind: "app", href: cap.web.path, ...cap.store });
+      } else if (cap.store.tagline !== undefined) {
+        apps.push({ kind: "app", ...cap.store });
       }
     }
     for (const link of options.links ?? []) {
