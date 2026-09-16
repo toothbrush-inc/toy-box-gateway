@@ -127,6 +127,35 @@ describe("GoogleConnectFlow", () => {
     ).toBe(true);
   });
 
+  it("carries a same-site return destination through consent, and drops any other", async () => {
+    const { flow } = makeFlow({});
+    const started = flow.start("acme_personal", "https://cal.gw.example.com/?x=1");
+    expect(started.ok).toBe(true);
+    if (!started.ok) {
+      return;
+    }
+    const done = await flow.handleCallback({ state: stateOf(started.redirectTo), code: "auth-code" });
+    expect(done).toMatchObject({ ok: true, next: "https://cal.gw.example.com/?x=1" });
+
+    // A cancelled consent still knows where home is.
+    const again = flow.start("acme_personal", "/somewhere");
+    if (!again.ok) {
+      return;
+    }
+    const denied = await flow.handleCallback({ state: stateOf(again.redirectTo), error: "access_denied" });
+    expect(denied).toMatchObject({ ok: false, next: "/somewhere" });
+
+    for (const bad of ["https://evil.example/", "http://cal.gw.example.com/", "//evil.example", 42]) {
+      const s = flow.start("acme_personal", bad);
+      if (!s.ok) {
+        return;
+      }
+      const r = await flow.handleCallback({ state: stateOf(s.redirectTo), code: "auth-code" });
+      expect(r.ok).toBe(true);
+      expect((r as { next?: string }).next).toBeUndefined();
+    }
+  });
+
   it("connects base role slots too, not only tenant instances", async () => {
     const { flow, vaultHome } = makeFlow({});
     const started = flow.start("work");

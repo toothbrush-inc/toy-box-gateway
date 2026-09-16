@@ -182,7 +182,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
         if (!requireSession(req, res)) {
           return;
         }
-        const started = connect.start(req.query["slot"]);
+        const started = connect.start(req.query["slot"], req.query["next"]);
         if (!started.ok) {
           res
             .status(400)
@@ -201,11 +201,21 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
           ...(typeof req.query["code"] === "string" ? { code: req.query["code"] } : {}),
           ...(typeof req.query["error"] === "string" ? { error: req.query["error"] } : {}),
         });
+        const backLink =
+          result.next === undefined ? undefined : { href: result.next, label: "Back to the setup page" };
         if (!result.ok) {
           res
             .status(400)
             .type("text/html; charset=utf-8")
-            .send(renderNoticeHtml("Connect failed", result.message));
+            .send(renderNoticeHtml("Connect failed", result.message, backLink));
+          return;
+        }
+        // The app that started this shows the connection landing; send the
+        // person back there to see it, with the slot named for its benefit.
+        if (result.next !== undefined) {
+          const back = new URL(result.next, publicUrl);
+          back.searchParams.set("connected", result.slot);
+          res.redirect(303, back.toString());
           return;
         }
         res
