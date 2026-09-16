@@ -38,13 +38,29 @@ const CODE_TTL_MS = 10 * 60 * 1000;
 const MAX_PENDING = 5000;
 
 /**
- * A post-login destination must stay on this origin. A single leading slash
- * is required; a second slash OR a backslash is refused because browsers
- * read `/\evil.example` as `//evil.example`, a protocol-relative URL — that
- * is an open redirect, not a path.
+ * A post-login destination must stay on this site. A relative path needs a
+ * single leading slash: a second slash OR a backslash is refused because
+ * browsers read `/\evil.example` as `//evil.example`, a protocol-relative
+ * URL, an open redirect dressed as a path. An absolute URL is allowed only
+ * for this host or a subdomain of it, over https: a fronted app on
+ * cal.<host> sends people here to sign in and wants them back.
  */
-export function safeRelativePath(next: string): string | undefined {
-  return /^\/(?![/\\])/u.test(next) ? next : undefined;
+export function safeNext(next: string, publicHost: string): string | undefined {
+  if (/^\/(?![/\\])/u.test(next)) {
+    return next;
+  }
+  let url: URL;
+  try {
+    url = new URL(next);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "") {
+    return undefined;
+  }
+  const host = url.hostname.toLowerCase();
+  const site = publicHost.toLowerCase();
+  return host === site || host.endsWith(`.${site}`) ? url.toString() : undefined;
 }
 export const SESSION_COOKIE = "gw_session";
 
@@ -156,8 +172,8 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
 
   /** Starts a browser (cookie) login; `next` must be a relative path. */
   startBrowserLogin(next: string): string {
-    const safeNext = safeRelativePath(next) ?? "/";
-    const state = this.newState({ kind: "browser", next: safeNext, expiresAt: Date.now() + PENDING_TTL_MS });
+    const destination = safeNext(next, new URL(this.issuer).hostname) ?? "/";
+    const state = this.newState({ kind: "browser", next: destination, expiresAt: Date.now() + PENDING_TTL_MS });
     return googleLoginUrl(this.endpoints, this.options.google, this.googleRedirectUri(), state);
   }
 

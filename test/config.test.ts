@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { GatewayConfigSchema, loadGatewayConfig, resolveConfigPath } from "../src/config.js";
+import { CapabilitySpecSchema, GatewayConfigSchema, loadGatewayConfig, resolveConfigPath } from "../src/config.js";
 
 const dirs: string[] = [];
 
@@ -57,6 +57,17 @@ describe("GatewayConfigSchema", () => {
       clientIdVar: "GOOGLE_OAUTH_CLIENT_ID",
       clientSecretVar: "GOOGLE_OAUTH_CLIENT_SECRET",
     });
+  });
+
+  it("lets web.path be a path here or an https URL on a sibling host", () => {
+    const base = { id: "cal", command: "node" };
+    expect(CapabilitySpecSchema.parse({ ...base, web: { path: "/cal" } }).web?.path).toBe("/cal");
+    expect(
+      CapabilitySpecSchema.parse({ ...base, web: { path: "https://cal.example.test" } }).web?.path,
+    ).toBe("https://cal.example.test");
+    expect(() => CapabilitySpecSchema.parse({ ...base, web: { path: "http://cal.example.test" } })).toThrow();
+    expect(() => CapabilitySpecSchema.parse({ ...base, web: { path: "cal" } })).toThrow();
+    expect(() => CapabilitySpecSchema.parse({ ...base, web: { path: "javascript:alert(1)" } })).toThrow();
   });
 
   it("rejects duplicate ids, the prefix separator, and the reserved id", () => {

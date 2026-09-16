@@ -89,7 +89,7 @@ interface OAuthHarness {
   http: HttpGateway;
 }
 
-async function startHarness(): Promise<OAuthHarness> {
+async function startHarness(serveExtra: Record<string, unknown> = {}): Promise<OAuthHarness> {
   const dir = tempDir();
   const fake = await startFakeWeather();
   const manifestPath = join(dir, "capability.json");
@@ -106,6 +106,7 @@ async function startHarness(): Promise<OAuthHarness> {
         host: "127.0.0.1",
         publicUrl: "http://127.0.0.1",
         auth: { stage: "static" },
+        ...serveExtra,
       },
     }),
     configPath: join(dir, "gateway.config.json"),
@@ -326,6 +327,60 @@ describe("oauth authorization server", () => {
     const logout = await fetch(`${harness.url}/logout`, { redirect: "manual" });
     expect(logout.status).toBe(302);
     expect(logout.headers.get("location")).toBe("/");
+  });
+
+  it("scopes the session cookie to the domain when asked, and clears both on logout", async () => {
+    const harness = await startHarness({ sessionCookieDomain: "127.0.0.1" });
+    const login = await fetch(`${harness.url}/login?next=/`, { redirect: "manual" });
+    const gstate = new URL(login.headers.get("location") ?? "").searchParams.get("state") ?? "";
+    const callback = await fetch(`${harness.url}/auth/google/callback?state=${gstate}&code=ok`, {
+      redirect: "manual",
+    });
+    const setCookie = callback.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("Domain=127.0.0.1");
+    const logout = await fetch(`${harness.url}/logout`, { redirect: "manual" });
+    const cleared = logout.headers.getSetCookie();
+    expect(cleared.some((c) => c.includes("Domain=127.0.0.1"))).toBe(true);
+    expect(cleared.some((c) => !c.includes("Domain="))).toBe(true);
+  });
+
+  it("sends a browser on a sibling host to this host's login and back", async () => {
+    // A real hostname: WHATWG URL parsing treats `x.127.0.0.1` as a bad IPv4.
+    const harness = await startHarness({
+      publicUrl: "https://gw.example.test",
+      allowedHosts: ["127.0.0.1"],
+    });
+    // Caddy's forward_auth on cal.<host> forwards the original host and uri.
+    const verify = await fetch(`${harness.url}/session/verify`, {
+      headers: { Accept: "text/html", "X-Forwarded-Host": "cal.gw.example.test", "X-Forwarded-Uri": "/?x=1" },
+      redirect: "manual",
+    });
+    expect(verify.status).toBe(302);
+    const login = new URL(verify.headers.get("location") ?? "");
+    expect(login.origin + login.pathname).toBe("https://gw.example.test/login");
+    expect(login.searchParams.get("next")).toBe("https://cal.gw.example.test/?x=1");
+
+    const roundTrip = async (next: string): Promise<string | null> => {
+      const start = await fetch(`${harness.url}/login?next=${encodeURIComponent(next)}`, {
+        redirect: "manual",
+      });
+      const gstate = new URL(start.headers.get("location") ?? "").searchParams.get("state") ?? "";
+      const callback = await fetch(`${harness.url}/auth/google/callback?state=${gstate}&code=ok`, {
+        redirect: "manual",
+      });
+      return callback.headers.get("location");
+    };
+    // The destination survives only because it is this site, over https.
+    expect(await roundTrip("https://cal.gw.example.test/?x=1")).toBe("https://cal.gw.example.test/?x=1");
+    expect(await roundTrip("https://gw.example.test/weather")).toBe("https://gw.example.test/weather");
+    for (const bad of [
+      "https://evil.example/",
+      "http://cal.gw.example.test/",
+      "https://gw.example.test.evil.example/",
+      "https://user:pw@cal.gw.example.test/",
+    ]) {
+      expect(await roundTrip(bad)).toBe("/");
+    }
   });
 
   it("persists clients and refresh families across a store reload", async () => {

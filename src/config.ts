@@ -34,7 +34,14 @@ const StoreCopyShape = {
 export const StoreCopySchema = z.object(StoreCopyShape);
 export type StoreCopy = z.infer<typeof StoreCopySchema>;
 
-const WEB_PATH = z.string().regex(/^\/[A-Za-z0-9/_-]*$/u, "web.path must be an absolute path");
+/** Where "Open" goes: a path on this host, or, for an app on a sibling host
+ * (cal.<domain>), a full https URL. */
+const WEB_PATH = z
+  .string()
+  .regex(
+    /^(\/[A-Za-z0-9/_-]*|https:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[^\s"'<>]*)?)$/u,
+    "web.path must be an absolute path or an https URL",
+  );
 
 /** The `store` block of a capability.json: the app's own storefront words.
  * Parsed here from the raw manifest (not through @local/vault) so a gateway
@@ -143,6 +150,11 @@ export const GatewayConfigSchema = z.object({
       host: z.string().min(1).default("127.0.0.1"),
       publicUrl: z.string().url(),
       allowedHosts: z.array(z.string().min(1)).optional(),
+      /** Share the browser session cookie with sibling hosts: set to the
+       * public hostname and it is sent to every subdomain too, so a
+       * `forward_auth` on cal.<host> sees the same sign-in. Off by default
+       * (host-only cookie). Pair it with `allowedHosts` listing those hosts. */
+      sessionCookieDomain: z.string().min(1).optional(),
       allowedOrigins: z
         .array(z.string().min(1))
         .default(["https://claude.ai", "https://claude.com"]),
