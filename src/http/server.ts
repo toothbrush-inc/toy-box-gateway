@@ -82,7 +82,8 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   const { core, serve, verifier, oauth } = options;
   const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const publicUrl = serve.publicUrl.replace(/\/+$/u, "");
-  const allowedHosts = serve.allowedHosts ?? [new URL(publicUrl).hostname];
+  const publicHost = new URL(publicUrl).hostname.toLowerCase();
+  const allowedHosts = serve.allowedHosts ?? [publicHost];
   const sessions = new SessionManager({
     ttlMs: serve.session.ttlMs,
     maxSessions: serve.session.maxSessions,
@@ -125,6 +126,10 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
       }),
     );
     const secureCookies = publicUrl.startsWith("https:");
+    // With a domain, the session is shared with sibling hosts (cal.<host>),
+    // which is what lets a forward_auth there see the same sign-in.
+    const cookieDomain = serve.sessionCookieDomain;
+    const cookieScope = cookieDomain === undefined ? {} : { domain: cookieDomain };
     app.get("/auth/google/callback", async (req: Request, res: Response) => {
       try {
         const result = await oauth.handleGoogleCallback({
@@ -139,6 +144,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
             sameSite: "lax",
             maxAge: 7 * 86_400_000,
             path: "/",
+            ...cookieScope,
           });
         }
         res.redirect(result.redirectTo);
@@ -152,7 +158,11 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
       res.redirect(oauth.startBrowserLogin(next));
     });
     app.get("/logout", (_req: Request, res: Response) => {
-      res.clearCookie(SESSION_COOKIE, { path: "/" });
+      res.clearCookie(SESSION_COOKIE, { path: "/", ...cookieScope });
+      // A host-only cookie from before the domain was set goes too.
+      if (cookieDomain !== undefined) {
+        res.clearCookie(SESSION_COOKIE, { path: "/" });
+      }
       res.redirect("/");
     });
     if (options.connect !== undefined) {
@@ -227,8 +237,17 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
       const forwarded = req.headers["x-forwarded-uri"];
       const accept = req.headers.accept ?? "";
       if (typeof forwarded === "string" || accept.includes("text/html")) {
-        const next = typeof forwarded === "string" ? forwarded : "/";
-        res.redirect(`/login?next=${encodeURIComponent(next)}`);
+        // The browser may be on a sibling host (cal.<host>): send it to this
+        // host's /login with an absolute way back. The login flow re-checks
+        // that the destination is this site.
+        const forwardedHost = req.headers["x-forwarded-host"];
+        const onSibling =
+          typeof forwardedHost === "string" &&
+          forwardedHost !== "" &&
+          forwardedHost.toLowerCase() !== publicHost;
+        const uri = typeof forwarded === "string" ? forwarded : "/";
+        const next = onSibling ? `https://${forwardedHost}${uri.startsWith("/") ? uri : `/${uri}`}` : uri;
+        res.redirect(`${publicUrl}/login?next=${encodeURIComponent(next)}`);
         return;
       }
       res.status(401).end();
