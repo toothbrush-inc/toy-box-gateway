@@ -20,12 +20,9 @@ link beside it.
 Above the tiles, the `store` block sets the wordmark (`name`, defaulting to
 the public hostname), the `headline`, an optional `lede` under it (omit it
 for no subtext), and `contact.email`, which powers the "Suggest an app" /
-"Say hello" buttons (omit `contact` to hide that section). The buttons open
-a Gmail compose window rather than a `mailto:` link, because a mailto does
-nothing in a browser with no mail handler registered; the address itself is
-shown beside them as a mailto link for any other mail app. The link is
-Gmail's final compose URL (`/mail/u/0/?tf=cm…`) rather than the legacy
-`?view=cm` form, whose redirect chain loops on some sessions. The footer shows
+"Say hello" buttons (omit `contact` to hide that section). The buttons are
+`mailto:` links with the subject prefilled, and the address is shown beside
+them. The footer shows
 `contact.byline` on the left and "© <year> <name>" on the right.
 
 What the anonymous reader gets is the catalogue and the MCP address, and
