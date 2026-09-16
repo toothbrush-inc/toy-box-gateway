@@ -121,7 +121,8 @@ server).
 | `port` | integer | 8800 |
 | `host` | string | `127.0.0.1` |
 | `publicUrl` | URL | required; the hostname is also the store's default wordmark |
-| `allowedHosts` | string[] | unset |
+| `allowedHosts` | string[] | unset (the `publicUrl` hostname) |
+| `sessionCookieDomain` | string | unset (host-only cookie) |
 | `allowedOrigins` | string[] | `["https://claude.ai", "https://claude.com"]` |
 | `session.ttlMs` | integer | 8 hours |
 | `session.maxSessions` | integer | 20 |
@@ -148,6 +149,16 @@ server).
 This is the sign-in the store page, `/views`, and the connect flow all share.
 The login client here is separate from `oauth.google` above, which is the
 broker's client for capability tokens.
+
+**A sibling host behind the same sign-in.** An app on `cal.<host>` can sit
+behind the proxy's `forward_auth` too: set `sessionCookieDomain` to the
+public hostname (the session cookie is then sent to every subdomain), add
+the sibling to `allowedHosts` (the proxy's auth sub-request carries that
+host), and have the route copy `X-Forwarded-User` to the app.
+`/session/verify` sends a signed-out browser on a sibling host to this
+host's `/login` with an absolute way back, and the login flow accepts an
+https destination only on this host or a subdomain of it. Point a tile at
+such an app with `capabilities[].web.path` set to its https URL.
 
 ## `links[]`
 
