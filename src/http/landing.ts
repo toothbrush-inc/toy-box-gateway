@@ -174,9 +174,15 @@ function toolsBlock(model: StoreModel): string {
  * because a mailto link does nothing in a browser with no mail handler
  * registered, which is the common case for people who read mail on the
  * web; everyone here signs in with Google, so Gmail is the safe bet. The
- * plain address is still shown, as a mailto link, for any other mail app. */
+ * plain address is still shown, as a mailto link, for any other mail app.
+ *
+ * This is the URL Gmail itself lands on after resolving its older forms
+ * (`?view=cm`, `?extsrc=mailto`). Linking to it directly skips that
+ * redirect chain, which on some sessions loops until Chrome gives up with
+ * ERR_TOO_MANY_REDIRECTS. `/u/0/` is the first signed-in account; Gmail
+ * offers a switch if that account is the wrong one. */
 function gmailCompose(to: string, subject: string): string {
-  return `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subject)}`;
+  return `https://mail.google.com/mail/u/0/?fs=1&tf=cm&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subject)}`;
 }
 
 function contactSection(model: StoreModel): string {
