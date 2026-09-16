@@ -308,6 +308,26 @@ describe("oauth authorization server", () => {
     expect(verifyBrowser.headers.get("location")).toContain("next=%2Fdashboard");
   });
 
+  it("keeps the post-login destination on this origin", async () => {
+    const harness = await startHarness();
+    // `/\\evil.example` reads as `//evil.example` in a browser: an open
+    // redirect dressed as a path. Both spellings fall back to the store page.
+    for (const bad of ["//evil.example/x", "/\\evil.example", "https://evil.example", "evil"]) {
+      const login = await fetch(`${harness.url}/login?next=${encodeURIComponent(bad)}`, {
+        redirect: "manual",
+      });
+      const gstate = new URL(login.headers.get("location") ?? "").searchParams.get("state") ?? "";
+      const callback = await fetch(`${harness.url}/auth/google/callback?state=${gstate}&code=ok`, {
+        redirect: "manual",
+      });
+      expect(callback.status).toBe(302);
+      expect(callback.headers.get("location")).toBe("/");
+    }
+    const logout = await fetch(`${harness.url}/logout`, { redirect: "manual" });
+    expect(logout.status).toBe(302);
+    expect(logout.headers.get("location")).toBe("/");
+  });
+
   it("persists clients and refresh families across a store reload", async () => {
     const dir = tempDir();
     const store = new OAuthDiskStore(dir);

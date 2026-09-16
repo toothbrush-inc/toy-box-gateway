@@ -9,6 +9,29 @@ const RESERVED_ID = "gateway";
 export const DEFAULT_AUDIT_MAX_BYTES = 5 * 1024 * 1024;
 export const DEFAULT_AUDIT_KEEP_FILES = 5;
 
+/** Named tints for store tiles — each app gets its own colour block. */
+export const STORE_ACCENTS = ["sky", "leaf", "marigold", "plum", "clay", "slate"] as const;
+export type StoreAccent = (typeof STORE_ACCENTS)[number];
+
+/** The words the public store page uses for one app. `label` is the only
+ * required field; the rest is what makes a tile worth reading — the pitch,
+ * the reasons it is valuable, and a badge such as "beta". */
+const StoreCopyShape = {
+  label: z.string().min(1).max(60),
+  /** One line under the name: what it does for you. */
+  tagline: z.string().min(1).max(120).optional(),
+  /** A short paragraph on why it is valuable. */
+  description: z.string().min(1).max(600).optional(),
+  /** Up to four concrete reasons, one line each. */
+  highlights: z.array(z.string().min(1).max(120)).max(4).optional(),
+  /** A short status word shown on the tile ("beta", "new"). */
+  badge: z.string().min(1).max(20).optional(),
+  accent: z.enum(STORE_ACCENTS).optional(),
+} as const;
+
+export const StoreCopySchema = z.object(StoreCopyShape);
+export type StoreCopy = z.infer<typeof StoreCopySchema>;
+
 export const CapabilitySpecSchema = z.object({
   id: z
     .string()
@@ -25,13 +48,12 @@ export const CapabilitySpecSchema = z.object({
   secretsAccess: z.enum(["broker"]).optional(),
   /** Where this capability's own web UI lives, when it has one. The gateway
    * cannot infer this: a dashboard is a separate service, not the MCP child
-   * mounted here. Capabilities without it still appear on the index — as
-   * agent-only, with their tools. */
+   * mounted here. Capabilities without it are agent-only: their tools show
+   * on the store page once someone has signed in. */
   web: z
     .object({
       path: z.string().regex(/^\/[A-Za-z0-9/_-]*$/u, "web.path must be an absolute path"),
-      label: z.string().min(1).max(60),
-      description: z.string().min(1).max(200).optional(),
+      ...StoreCopyShape,
     })
     .optional(),
 }).refine((spec) => spec.secretsAccess === undefined || spec.manifestPath !== undefined, {
@@ -141,21 +163,40 @@ export const GatewayConfigSchema = z.object({
     })
     .optional(),
   /** Sibling web apps that are not mounted capabilities — they still belong
-   * on the home index (MailFeed on mail.$GW_DOMAIN is the first of these). */
+   * on the store page (MailFeed on mail.$GW_DOMAIN is the first of these). */
   links: z
     .array(
       z.object({
         href: z.string().url(),
-        label: z.string().min(1).max(60),
-        description: z.string().min(1).max(200).optional(),
+        ...StoreCopyShape,
       }),
     )
     .default([]),
+  /** The public store page: the words above the tiles and how to reach the
+   * person behind it. Everything is optional; the page falls back to the
+   * public URL's hostname and generic copy. */
+  store: z
+    .object({
+      /** Wordmark. Defaults to the hostname of serve.publicUrl. */
+      name: z.string().min(1).max(60).optional(),
+      headline: z.string().min(1).max(160).optional(),
+      lede: z.string().min(1).max(400).optional(),
+      /** Where "suggest an app" and "say hello" go. Omit to hide the section. */
+      contact: z
+        .object({
+          email: z.string().email(),
+          /** Who the person is, in a few words ("Built by David"). */
+          byline: z.string().min(1).max(120).optional(),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 export type ServeConfig = NonNullable<z.infer<typeof GatewayConfigSchema>["serve"]>;
 export type ViewsConfig = z.infer<typeof GatewayConfigSchema>["views"];
 export type GatewayLink = z.infer<typeof GatewayConfigSchema>["links"][number];
+export type StoreConfig = NonNullable<z.infer<typeof GatewayConfigSchema>["store"]>;
 
 /** Parses "label:token,label2:token2" (or a bare token => label "default"). */
 export function parseBearerTokens(raw: string | undefined): Map<string, string> {

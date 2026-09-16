@@ -3,24 +3,45 @@
     {
       "id": "calsync",
       "command": "node",
-      "args": ["apps/cli/dist/cli.js", "mcp"],
+      "args": [
+        "apps/cli/dist/cli.js",
+        "mcp"
+      ],
       "cwd": "/Users/dvd/code/davidd8/calsync-oss",
       "manifestPath": "/Users/dvd/code/davidd8/calsync-oss/apps/cli/capability.json",
       "secretsAccess": "broker",
-      "denyTools": ["sync_now"]
+      "denyTools": [
+        "sync_now"
+      ]
     },
     {
       "id": "weather",
       "command": "node",
-      "args": ["mcp/server.mjs"],
+      "args": [
+        "mcp/server.mjs"
+      ],
       "cwd": "/Users/dvd/code/davidd8/weather-compare",
       "manifestPath": "/Users/dvd/code/davidd8/weather-compare/capability.json",
-      "secretsAccess": "broker"
+      "secretsAccess": "broker",
+      "web": {
+        "path": "/weather",
+        "label": "Weather",
+        "accent": "sky",
+        "tagline": "Know which forecast to trust before you plan the day.",
+        "description": "Three forecasts side by side for the places you follow, with a running score of who was right.",
+        "highlights": [
+          "Today’s high and low and the hour-by-hour shape",
+          "Air quality from a sensor near you",
+          "A heads-up when tomorrow is out of the ordinary"
+        ]
+      }
     },
     {
       "id": "fitness",
       "command": "node",
-      "args": ["mcp/server.mjs"],
+      "args": [
+        "mcp/server.mjs"
+      ],
       "cwd": "/Users/dvd/code/davidd8/fitness-tracker",
       "manifestPath": "/Users/dvd/code/davidd8/fitness-tracker/capability.json",
       "secretsAccess": "broker",
@@ -30,11 +51,33 @@
       }
     }
   ],
-  "audit": { "maxBytes": 5242880, "keepFiles": 5 },
-  "commons": { "dir": "/Users/dvd/code/davidd8/fitness-tracker/data" },
+  "audit": {
+    "maxBytes": 5242880,
+    "keepFiles": 5
+  },
+  "commons": {
+    "dir": "/Users/dvd/code/davidd8/fitness-tracker/data"
+  },
   "oauth": {
     "google": {
       "envFile": "/Users/dvd/code/davidd8/calsync-oss/.env"
+    }
+  },
+  "links": [
+    {
+      "href": "https://mail.example.com",
+      "label": "MailFeed",
+      "badge": "beta",
+      "accent": "marigold",
+      "tagline": "The newsletters in your inbox, turned into a reading feed."
+    }
+  ],
+  "store": {
+    "headline": "Small apps, made by hand, for people I know.",
+    "lede": "One sign-in, one place, and every app also works from your AI assistant.",
+    "contact": {
+      "email": "you@example.com",
+      "byline": "Built and run by one person"
     }
   }
 }

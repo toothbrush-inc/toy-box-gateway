@@ -17,12 +17,11 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
-import type { ServeConfig } from "../config.js";
+import type { GatewayLink, ServeConfig, StoreConfig } from "../config.js";
 import { createGatewaySession, type CallIdentity, type GatewayCore } from "../gateway.js";
 import {
   renderCardHtml,
   renderCardJson,
-  renderHomeHtml,
   renderNoticeHtml,
   renderPreviewHtml,
   renderPreviewJson,
@@ -30,17 +29,20 @@ import {
 } from "../views/render.js";
 import { BoundedEventStore } from "./event-store.js";
 import type { GoogleConnectFlow } from "./connect.js";
+import { renderStoreHtml, storeJson, type StoreApp, type StoreModel } from "./landing.js";
 import { SESSION_COOKIE, type GatewayOAuthProvider } from "./oauth/provider.js";
+import { SessionManager } from "./sessions.js";
 
 /** Trusted identity header handed to fronted apps by Caddy's forward_auth `copy_headers`. */
 export const FORWARDED_USER_HEADER = "X-Forwarded-User";
-import { SessionManager } from "./sessions.js";
 
 export interface HttpGatewayOptions {
   core: GatewayCore;
   serve: ServeConfig;
   /** Sibling web apps that aren't mounted capabilities (see config.links). */
-  links?: readonly { href: string; label: string; description?: string | undefined }[];
+  links?: readonly GatewayLink[];
+  /** The store page's own words and contact (see config.store). */
+  store?: StoreConfig;
   verifier: OAuthTokenVerifier;
   /** Stage 2: the gateway's own OAuth AS — mounts the auth router, the Google
    * callback, and browser-session (cookie) auth for the views surface. */
@@ -91,6 +93,8 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   // Exactly one trusted hop (Caddy). `true` would let clients spoof their IP
   // via X-Forwarded-For and bypass the auth endpoints' rate limiting.
   app.set("trust proxy", 1);
+  // No framework banner on a public page.
+  app.disable("x-powered-by");
   app.use(hostHeaderValidation(allowedHosts));
   app.use(
     "/mcp",
@@ -144,12 +148,12 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
       }
     });
     app.get("/login", (req: Request, res: Response) => {
-      const next = typeof req.query["next"] === "string" ? req.query["next"] : "/views";
+      const next = typeof req.query["next"] === "string" ? req.query["next"] : "/";
       res.redirect(oauth.startBrowserLogin(next));
     });
     app.get("/logout", (_req: Request, res: Response) => {
       res.clearCookie(SESSION_COOKIE, { path: "/" });
-      res.status(200).type("text/plain").send("signed out");
+      res.redirect("/");
     });
     if (options.connect !== undefined) {
       const connect = options.connect;
@@ -346,29 +350,65 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   // .json for machines. A failed last run renders as an error card, not a 500.
   const views = core.views;
 
-  // The front door. Apps you can open are links; capabilities without a web UI
-  // still appear with their tools, so an agent-only capability is discoverable
-  // instead of invisible. Everything is read from what is actually mounted.
-  app.get("/", viewsAuth, (req: Request, res: Response) => {
-    let viewsSummary: { count: number; failing: number } | undefined;
-    if (views !== undefined) {
-      const pinned = views.list();
-      viewsSummary = {
-        count: pinned.length,
-        failing: pinned.filter((spec) => views.getSnapshot(spec.id)?.ok === false).length,
-      };
+  // The front door is public: the catalogue (config copy) for everyone, and
+  // for a signed-in viewer — session cookie or API bearer — what is mounted
+  // underneath: tools and health. An anonymous reader learns what the apps
+  // are for, never what the running system looks like.
+  const storeApps = (): StoreApp[] => {
+    const apps: StoreApp[] = [];
+    for (const spec of core.listCapabilities()) {
+      if (spec.web !== undefined) {
+        const { path, ...copy } = spec.web;
+        apps.push({ href: path, kind: "app", ...copy });
+      }
     }
-    const model = {
-      capabilities: core.listCapabilities(),
-      ...(options.links === undefined || options.links.length === 0 ? {} : { links: options.links }),
-      ...(viewsSummary === undefined ? {} : { views: viewsSummary }),
-      mcpUrl: `${publicUrl}/mcp`,
-    };
-    if ((req.headers.accept ?? "").includes("text/html")) {
-      res.status(200).type("text/html; charset=utf-8").send(renderHomeHtml(model));
+    for (const link of options.links ?? []) {
+      const { href, ...copy } = link;
+      apps.push({ href, kind: "link", ...copy });
+    }
+    return apps;
+  };
+  const host = new URL(publicUrl).hostname;
+
+  const viewerOf = (req: Request, res: Response, next: express.NextFunction): void => {
+    if (oauth !== undefined) {
+      const email = oauth.verifySessionCookie(readCookie(req, SESSION_COOKIE));
+      if (email !== null) {
+        res.locals["viewer"] = email;
+        next();
+        return;
+      }
+    }
+    if (req.headers.authorization !== undefined) {
+      // A presented token must be valid; a bad one is refused, not ignored.
+      bearer(req, res, () => {
+        const user = req.auth?.extra?.["user"];
+        res.locals["viewer"] = typeof user === "string" ? user : req.auth?.clientId ?? "api";
+        next();
+      });
       return;
     }
-    res.status(200).json({ ok: true, data: model });
+    next();
+  };
+
+  app.get("/", viewerOf, (req: Request, res: Response) => {
+    const viewer = typeof res.locals["viewer"] === "string" ? res.locals["viewer"] : undefined;
+    const model: StoreModel = {
+      host,
+      ...(options.store === undefined ? {} : { store: options.store }),
+      apps: storeApps(),
+      mcpUrl: `${publicUrl}/mcp`,
+      ...(viewer === undefined
+        ? {}
+        : { viewer: { email: viewer }, capabilities: core.listCapabilities() }),
+      ...(oauth === undefined || viewer !== undefined ? {} : { signInPath: "/login?next=%2F" }),
+    };
+    res.setHeader("Cache-Control", "no-store");
+    if ((req.headers.accept ?? "").includes("text/html")) {
+      res.status(200).type("text/html; charset=utf-8").send(renderStoreHtml(model));
+      return;
+    }
+    res.status(200).json({ ok: true, data: storeJson(model) });
   });
 
   if (views !== undefined) {
