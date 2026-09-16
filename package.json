@@ -2,7 +2,7 @@
   "name": "@local/capability-gateway",
   "version": "0.11.0",
   "private": false,
-  "description": "Local capability gateway: mounts capability MCP servers, enforces grants and tool policy, audits calls",
+  "description": "One sign-in, one place, and every app also works from your AI assistant. An MCP gateway that mounts capability servers, holds the keys, enforces grants and tool policy, audits every call, and serves the app store page.",
   "type": "module",
   "bin": {
     "capability-gateway": "./dist/cli.js"
