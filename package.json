@@ -38,7 +38,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@dvd-toy-box/vault": "^0.12.2",
+    "@dvd-toy-box/vault": "^0.13.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
