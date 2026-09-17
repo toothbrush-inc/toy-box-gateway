@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { CallScopeRegistry, legacyUserSlug, userSlug } from "../src/call-scope.js";
+import { CallScopeRegistry, legacyUserSlug, userMayUseSlot, userSlug } from "../src/call-scope.js";
 
 describe("CallScopeRegistry", () => {
   it("mints a resolvable nonce and releases it", () => {
@@ -65,5 +65,44 @@ describe("userSlug", () => {
     expect(legacyUserSlug("owner@example.com")).toBe("owner_at_example_com");
     expect(legacyUserSlug("a.reader@example.com")).toBe("a_reader_at_example_com");
     expect(legacyUserSlug("alice@example.com")).toBe("alice_at_example_com");
+  });
+});
+
+describe("userMayUseSlot", () => {
+  const alice = "alice@example.com";
+  const bob = "bob@example.com";
+  const aliceTenant = userSlug(alice) as string;
+  const bobTenant = userSlug(bob) as string;
+
+  it("lets a signed-in person use their own tenant-scoped slots with no config", () => {
+    expect(userMayUseSlot(alice, "google", `${aliceTenant}_personal`, {})).toBe(true);
+    expect(userMayUseSlot(alice, "google", `${aliceTenant}_work`, {})).toBe(true);
+  });
+
+  it("never reaches another person's tenant", () => {
+    expect(userMayUseSlot(alice, "google", `${bobTenant}_personal`, {})).toBe(false);
+    expect(userMayUseSlot(bob, "google", `${aliceTenant}_work`, {})).toBe(false);
+  });
+
+  it("keeps bare and shared slots explicit-only", () => {
+    expect(userMayUseSlot(alice, "google", "personal", {})).toBe(false);
+    expect(userMayUseSlot(alice, "purpleair", "default", {})).toBe(false);
+    expect(userMayUseSlot(alice, "google", "personal", { "google:personal": [alice] })).toBe(true);
+    expect(userMayUseSlot(bob, "google", "personal", { "google:personal": [alice] })).toBe(false);
+    expect(userMayUseSlot(alice, "purpleair", "default", { "purpleair:default": [alice, bob] })).toBe(true);
+  });
+
+  it("refuses an unidentified caller and malformed slots", () => {
+    expect(userMayUseSlot(undefined, "google", `${aliceTenant}_personal`, {})).toBe(false);
+    expect(userMayUseSlot(alice, "google", aliceTenant, {})).toBe(false);
+    expect(userMayUseSlot(alice, "google", `${aliceTenant}_`, {})).toBe(false);
+    expect(userMayUseSlot(alice, "google", `_${aliceTenant}`, {})).toBe(false);
+  });
+
+  it("splits at the last underscore, so a bare owner cannot claim a longer tenant", () => {
+    // Bare (non-email) owners slug with underscores; "a" must not own "a_b"'s slots.
+    expect(userMayUseSlot("a", "google", "a_b_personal", {})).toBe(false);
+    expect(userMayUseSlot("a.b", "google", "a_b_personal", {})).toBe(true);
+    expect(userMayUseSlot("a", "google", "a_personal", {})).toBe(true);
   });
 });

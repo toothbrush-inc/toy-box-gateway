@@ -123,7 +123,7 @@ server).
 | `publicUrl` | URL | required; the hostname is also the store's default wordmark |
 | `allowedHosts` | string[] | unset (the `publicUrl` hostname) |
 | `sessionCookieDomain` | string | unset (host-only cookie; see trust warning below) |
-| `credentialUsers` | object mapping `provider:slot` to user-id arrays | `{}`; denies hosted credential use until configured |
+| `credentialUsers` | object mapping `provider:slot` to user-id arrays | `{}`; bare and shared slots are denied until listed, a person's own `<tenant>_<role>` slots are always theirs |
 | `owners` | string[] | `[]`: over HTTP, nobody gets the management tools |
 | `allowedOrigins` | string[] | `["https://claude.ai", "https://claude.com"]` |
 | `session.ttlMs` | integer | 8 hours |
@@ -198,7 +198,15 @@ public hostname and generic copy.
 `serve.credentialUsers` explicitly assigns access to each connection in the
 shared vault. The broker resolves the call nonce to the signed-in user and
 checks this list before reading a secret or serving a cached token. Existing
-capability declarations and grants are still required. For example:
+capability declarations and grants are still required.
+
+Tenant-scoped slots are self-serve: `<tenant>_<role>` belongs to the person
+whose identity slug (`identitySlug(email)` from `@dvd-toy-box/vault`, the
+same id calsync names tenants with) is `<tenant>`, so a store sign-in can
+connect and use its own slots through `/auth/google/connect?slot=…` and the
+broker with no entry here, and can never reach another person's. Bare slots
+(`personal`, `default`) and shared keys have no tenant and are handed out
+only by this list. For example:
 
 ```json
 {

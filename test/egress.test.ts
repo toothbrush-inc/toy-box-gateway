@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { FileProfileStore, openVault } from "@dvd-toy-box/vault";
+import { FileProfileStore, identitySlug, openVault } from "@dvd-toy-box/vault";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AuditWriter, type AuditEntry } from "../src/audit.js";
@@ -957,6 +957,36 @@ describe("hosted credential ownership and upstream budgets", () => {
       }
     }
     expect(harness.upstream).toHaveBeenCalledTimes(2);
+  });
+
+  it("serves a person's own tenant slot with no credentialUsers entry, and nobody else's", async () => {
+    const alice = "alice@example.com";
+    const bob = "bob@example.com";
+    const aliceSlot = `${identitySlug(alice) as string}_personal`;
+    const bobSlot = `${identitySlug(bob) as string}_personal`;
+    const harness = await startBroker({
+      oauth: { google: { clientId: "id", clientSecret: "secret" } },
+      credentialUsers: {},
+      resolveCall: (nonce) => nonce === "a" ? alice : nonce === "b" ? bob : undefined,
+      upstream: () => new Response(JSON.stringify({ access_token: "ya29.own", expires_in: 3600 })),
+    });
+    for (const slot of [aliceSlot, bobSlot, "personal"]) {
+      await harness.seedVault.putSecret({ provider: "google", slot, kind: "oauth", secret: `refresh-${slot}` });
+      harness.seedVault.putGrant({ capability: "calsync", connectionId: `google:${slot}` });
+    }
+    const own = await call(harness, "/token", "tok-calsync", { provider: "google", slot: aliceSlot }, "a");
+    expect(own.status).toBe(200);
+    for (const [slot, nonce] of [
+      [bobSlot, "a"],
+      [aliceSlot, "b"],
+      ["personal", "a"],
+      [aliceSlot, undefined],
+    ] as const) {
+      const refused = await call(harness, "/token", "tok-calsync", { provider: "google", slot }, nonce);
+      expect(refused.status).toBe(403);
+      expect(errorCode(refused.json)).toBe("credential_denied");
+    }
+    expect(harness.upstream).toHaveBeenCalledTimes(1);
   });
 
   it("caps body bytes, concurrent requests and the total upstream duration", async () => {

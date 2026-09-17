@@ -18,6 +18,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import type { GatewayLink, ServeConfig, StoreConfig } from "../config.js";
+import { userMayUseSlot } from "../call-scope.js";
 import { createGatewaySession, type CallIdentity, type GatewayCore } from "../gateway.js";
 import {
   renderCardHtml,
@@ -218,14 +219,15 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
       // Store a Google grant under ?slot=<role> or <tenant>_<role>: consent
       // (offline access) -> refresh token into the vault -> grants for every
       // capability declaring the matched role. The signed-in user completes
-      // the consent with whichever Google account owns the data.
+      // the consent with whichever Google account owns the data. Their own
+      // tenant's slots need no credentialUsers entry; bare roles do.
       app.get("/auth/google/connect", (req: Request, res: Response) => {
         if (!requireSession(req, res)) {
           return;
         }
         const user = oauth.verifySessionCookie(readCookie(req, SESSION_COOKIE));
         const slot = typeof req.query["slot"] === "string" ? req.query["slot"].trim().toLowerCase() : "";
-        if (user === null || !serve.credentialUsers[`google:${slot}`]?.includes(user)) {
+        if (user === null || !userMayUseSlot(user, "google", slot, serve.credentialUsers)) {
           res.status(403).send("this account may not connect that slot");
           return;
         }
