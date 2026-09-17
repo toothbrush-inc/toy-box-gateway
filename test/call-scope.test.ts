@@ -64,6 +64,6 @@ describe("userSlug", () => {
   it("keeps the legacy punctuation slug for migration lookups", () => {
     expect(legacyUserSlug("owner@example.com")).toBe("owner_at_example_com");
     expect(legacyUserSlug("a.reader@example.com")).toBe("a_reader_at_example_com");
-    expect(legacyUserSlug("dvd@thephotobase.com")).toBe("dvd_at_thephotobase_com");
+    expect(legacyUserSlug("alice@example.com")).toBe("alice_at_example_com");
   });
 });
