@@ -1,0 +1,4 @@
+# Display-only mapping for historical commit emails. Does not rewrite history.
+DVD <dvd@protocol.ai> <dvd@thephotobase.com>
+DVD <dvd@protocol.ai> <d.dryjanski@gmail.com>
+dvd <dvd@protocol.ai> <dvd@protocol.ai>

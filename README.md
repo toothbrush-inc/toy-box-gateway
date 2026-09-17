@@ -2,7 +2,7 @@
 
 **One sign-in, one place, and every app also works from your AI assistant.**
 
-`@local/capability-gateway` is two things. For a person, it is a small store
+`@dvd-toy-box/gateway` is two things. For a person, it is a small store
 of hand-built apps: open one in the browser, or add one address to Claude or
 Cursor and every app becomes a set of tools in chat, with no keys to copy. For
 a developer, it is an open-source **MCP gateway**: one stdio (or public HTTP)
@@ -108,8 +108,17 @@ In serve mode the same gateway is a public Streamable-HTTP endpoint at
 ## Quick start
 
 ```sh
-npm install github:davidd8/capability-gateway
+npm install -g @dvd-toy-box/gateway
 capability-gateway --config /path/to/gateway.config.json
+```
+
+Requires Node 20 or newer. The `@dvd-toy-box` scope is the home for this and
+[`@dvd-toy-box/vault`](https://www.npmjs.com/package/@dvd-toy-box/vault).
+
+To track a commit that is not on npm yet:
+
+```sh
+npm install github:davidd8/capability-gateway#<tag-or-sha>
 ```
 
 Or from a checkout: `npm install && npm run build && node dist/cli.js --config …`.
@@ -182,7 +191,8 @@ npm run build
 ```
 
 Tests use the MCP SDK's in-memory transports with fake capability servers —
-no sibling repos or child processes required.
+no sibling repos or child processes required. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for PR expectations and [SECURITY.md](SECURITY.md) for how to report issues.
 
 ## License
 
