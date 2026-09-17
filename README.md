@@ -11,9 +11,9 @@ their tools under prefixed names, brokers credential use, checks
 a grant on every call, and keeps an audit log of who used what.
 
 The gateway is strictly additive. Every capability that follows the
-[capability contract](https://github.com/davidd8/local-vault/blob/main/CAPABILITY.md)
+[capability contract](https://github.com/toothbrush-inc/toy-box-vault/blob/main/CAPABILITY.md)
 keeps working on its own with only
-[`@dvd-toy-box/vault`](https://github.com/davidd8/local-vault); mounting it here
+[`@dvd-toy-box/vault`](https://github.com/toothbrush-inc/toy-box-vault); mounting it here
 adds one endpoint, enforced grants, tool policy, a brokered network path, and
 the logbook.
 
@@ -118,7 +118,7 @@ Requires Node 20 or newer. The `@dvd-toy-box` scope is the home for this and
 To track a commit that is not on npm yet:
 
 ```sh
-npm install github:davidd8/capability-gateway#<tag-or-sha>
+npm install github:toothbrush-inc/toy-box-gateway#<tag-or-sha>
 ```
 
 Or from a checkout: `npm install && npm run build && node dist/cli.js --config …`.

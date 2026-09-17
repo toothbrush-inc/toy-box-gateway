@@ -1,7 +1,7 @@
 # Security
 
 Report suspected vulnerabilities privately through this repository's
-[GitHub security advisory form](https://github.com/davidd8/capability-gateway/security/advisories/new).
+[GitHub security advisory form](https://github.com/toothbrush-inc/toy-box-gateway/security/advisories/new).
 If private reporting is unavailable, contact the repository maintainer
 privately. Do not post credentials, personal data or working exploits in
 public issues. Include the version, deployment mode, reproduction steps and

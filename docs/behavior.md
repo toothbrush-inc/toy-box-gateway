@@ -29,4 +29,4 @@ Rate limits per grant; calsync's internal adoption of `/token` (a
 BrokeredAuthClient for googleapis — until then calsync reads its refresh
 token in-process under explicit grants); non-GET egress and streaming bodies;
 OS sandboxing; hosted mode with an install/grant UI. See
-[local-vault FUTURE.md](https://github.com/davidd8/local-vault/blob/main/FUTURE.md).
+[toy-box-vault FUTURE.md](https://github.com/toothbrush-inc/toy-box-vault/blob/main/FUTURE.md).

@@ -429,7 +429,7 @@ describe("store page", () => {
       highlights: ["Air quality from a sensor near you"],
       accent: "sky",
       web: { path: "/weather" },
-      repo: "https://github.com/davidd8/weather-compare",
+      repo: "https://github.com/example/weather-compare",
     };
     const fromManifest = await startHarness({ manifestStore });
     const html = await (await getHome(fromManifest, "text/html", null)).text();
@@ -449,7 +449,7 @@ describe("store page", () => {
       description: "Three forecasts side by side.",
       highlights: ["Air quality from a sensor near you"],
       accent: "sky",
-      repo: "https://github.com/davidd8/weather-compare",
+      repo: "https://github.com/example/weather-compare",
     });
 
     const overridden = await startHarness({
@@ -470,7 +470,7 @@ describe("store page", () => {
       manifestStore: {
         name: "calsync",
         tagline: "Two calendars. One schedule.",
-        repo: "https://github.com/davidd8/calsync",
+        repo: "https://github.com/example/calsync",
       },
       links: [
         {
@@ -490,7 +490,7 @@ describe("store page", () => {
     // Chips say what each tile is, and the repo link says where to get it.
     const calsyncTile = html.slice(html.indexOf("Two calendars"), html.indexOf("MailFeed"));
     expect(calsyncTile).toContain('<ul class="chips"><li>Works with your assistant</li><li>Open source</li></ul>');
-    expect(calsyncTile).toContain('href="https://github.com/davidd8/calsync" rel="noopener">Run it yourself</a>');
+    expect(calsyncTile).toContain('href="https://github.com/example/calsync" rel="noopener">Run it yourself</a>');
     const mailTile = html.slice(html.indexOf("MailFeed"));
     expect(mailTile).toContain('<ul class="chips"><li>Web app</li><li>Open source</li></ul>');
     expect(mailTile).toContain('<a class="tile-cta" href="https://mail.example.com">Open MailFeed</a>');
@@ -499,7 +499,7 @@ describe("store page", () => {
       data: { apps: Record<string, unknown>[] };
     };
     expect(json.data.apps.map((app) => [app["kind"], app["href"], app["repo"]])).toEqual([
-      ["app", undefined, "https://github.com/davidd8/calsync"],
+      ["app", undefined, "https://github.com/example/calsync"],
       ["link", "https://mail.example.com", "https://github.com/toothbrush-inc/mailfeed"],
     ]);
   });

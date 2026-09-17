@@ -27,7 +27,7 @@ No sibling repos or child processes are required.
 ## Security
 
 Report vulnerabilities privately via the
-[GitHub security advisory form](https://github.com/davidd8/capability-gateway/security/advisories/new).
+[GitHub security advisory form](https://github.com/toothbrush-inc/toy-box-gateway/security/advisories/new).
 See [SECURITY.md](SECURITY.md) for the trust boundary.
 
 ## Release notes for maintainers
