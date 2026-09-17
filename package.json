@@ -54,11 +54,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/davidd8/capability-gateway.git"
+    "url": "git+https://github.com/toothbrush-inc/toy-box-gateway.git"
   },
-  "homepage": "https://github.com/davidd8/capability-gateway#readme",
+  "homepage": "https://github.com/toothbrush-inc/toy-box-gateway#readme",
   "bugs": {
-    "url": "https://github.com/davidd8/capability-gateway/issues"
+    "url": "https://github.com/toothbrush-inc/toy-box-gateway/issues"
   },
   "keywords": [
     "mcp",

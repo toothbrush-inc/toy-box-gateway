@@ -21,7 +21,7 @@ const STORE = {
   highlights: ["Air quality near you"],
   accent: "sky",
   web: { path: "/weather" },
-  repo: "https://github.com/davidd8/weather-compare",
+  repo: "https://github.com/example/weather-compare",
 };
 
 describe("store copy resolution", () => {
@@ -36,7 +36,7 @@ describe("store copy resolution", () => {
         description: "Three forecasts side by side.",
         highlights: ["Air quality near you"],
         accent: "sky",
-        repo: "https://github.com/davidd8/weather-compare",
+        repo: "https://github.com/example/weather-compare",
       },
       path: "/weather",
     });
