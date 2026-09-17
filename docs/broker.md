@@ -28,6 +28,17 @@ endpoint via `VAULT_EGRESS_URL` + a per-capability `VAULT_EGRESS_TOKEN`:
   gets a crisp `grant_missing`, never a silent success. Token-mint audit rows
   carry the slot, so per-tenant mints stay attributable.
 
+  **Identity → tenant / profile id**: use `tenantForIdentity` /
+  `identitySlug` from `@dvd-toy-box/vault` (the gateway re-exports the latter
+  as `userSlug`). Emails map to `i` + the first 32 hex characters of SHA-256
+  of the lowercased address — shared with calsync auto tenants and broker
+  slot prefixes. Distinct addresses that only differ in punctuation no longer
+  collide. Pre-hash profile directories (`owner_at_example_com`) are still read
+  as a migration fallback via `legacyUserSlug`. Existing calsync
+  punctuation-slug tenants and their broker slots (`<slug>_personal`) need
+  `CALSYNC_WEB_IDENTITY_TENANTS` overrides or a rename before dropping the
+  override map — changing the hash function alone does not move vault grants.
+
   **Onboarding** (`oauth.google.connect` in the config): with
   `connect: { scopes: [...] }` set, the serve process mounts a session-gated
   consent flow at `/auth/google/connect?slot=<slot>` (requires the stage-2
