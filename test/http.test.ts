@@ -396,6 +396,21 @@ describe("store page", () => {
     expect(html).toContain('<span class="badge">new</span>');
     expect(html).toContain("tile--sky");
     expect(html).toContain("Open Weather");
+    // The paragraph and highlights fold behind a native toggle so the card
+    // stays short; the tagline, chips and actions sit outside the fold.
+    expect(html).toContain(
+      '<details class="tile-more"><summary>More about Weather</summary><div class="tile-body"><p class="tile-desc">Three sources side by side.</p><ul class="tile-points">',
+    );
+    expect(html).toMatch(/<\/details><ul class="chips">/u);
+  });
+
+  it("omits the tile fold when there is nothing to fold", async () => {
+    const harness = await startHarness({
+      web: { path: "/weather", label: "Weather", tagline: "Know which forecast to trust." },
+    });
+    const html = await (await getHome(harness, "text/html", null)).text();
+    expect(html).toContain("Know which forecast to trust.");
+    expect(html).not.toContain("<details");
   });
 
   it("builds the tile from the manifest's store block, with config overriding per field", async () => {
@@ -500,6 +515,10 @@ describe("store page", () => {
     const signedIn = await (await getHome(harness, "text/html")).text();
     expect(signedIn).toContain("Wx Tools");
     expect(signedIn).toContain("echo");
+    // The tool list folds behind the heading, which keeps the count.
+    expect(signedIn).toContain(
+      '<details class="tool-group"><summary><h3 class="tool-group-name">Wx Tools <span class="health health--ok">4 tools</span></h3></summary><ul class="tools">',
+    );
   });
 
   it("links a sibling app that is not a mounted capability", async () => {

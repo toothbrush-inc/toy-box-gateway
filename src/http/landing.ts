@@ -105,20 +105,34 @@ function actions(app: StoreApp, model: StoreModel): string {
   return `<div class="tile-actions">${primary}${repo}</div>`;
 }
 
-function tile(app: StoreApp, index: number, model: StoreModel): string {
-  const badge = app.badge === undefined ? "" : `<span class="badge">${esc(app.badge)}</span>`;
-  const tagline = app.tagline === undefined ? "" : `<p class="tile-tag">${esc(app.tagline)}</p>`;
+/** The long half of a tile — the paragraph and the highlights — folded
+ * behind a "More" toggle so the card stays short, above all on a phone
+ * where the tiles stack. A native `<details>` does it without a script,
+ * which the page has none of by design; the tagline, chips and actions
+ * stay visible, so the fold hides nothing needed to choose an app. */
+function tileMore(app: StoreApp): string {
   const description = app.description === undefined ? "" : `<p class="tile-desc">${esc(app.description)}</p>`;
   const points =
     app.highlights === undefined || app.highlights.length === 0
       ? ""
       : `<ul class="tile-points">${app.highlights.map((line) => `<li>${esc(line)}</li>`).join("")}</ul>`;
+  if (description === "" && points === "") {
+    return "";
+  }
+  return (
+    `<details class="tile-more"><summary>More about ${esc(app.label)}</summary>` +
+    `<div class="tile-body">${description}${points}</div></details>`
+  );
+}
+
+function tile(app: StoreApp, index: number, model: StoreModel): string {
+  const badge = app.badge === undefined ? "" : `<span class="badge">${esc(app.badge)}</span>`;
+  const tagline = app.tagline === undefined ? "" : `<p class="tile-tag">${esc(app.tagline)}</p>`;
   return (
     `<article class="tile tile--${accentFor(app, index)}" style="--i:${String(index)}">` +
     `<div class="tile-head"><h3 class="tile-name">${esc(app.label)}</h3>${badge}</div>` +
     tagline +
-    description +
-    points +
+    tileMore(app) +
     chips(app) +
     actions(app, model) +
     `</article>`
@@ -152,19 +166,25 @@ function toolsBlock(model: StoreModel): string {
       const health = up
         ? `<span class="health health--ok">${String(cap.tools.length)} ${cap.tools.length === 1 ? "tool" : "tools"}</span>`
         : `<span class="health health--bad">not connected${cap.lastError === null ? "" : `: ${esc(cap.lastError)}`}</span>`;
-      const list = !up
-        ? ""
-        : cap.tools.length === 0
-          ? `<p class="quiet">No tools exposed.</p>`
-          : `<ul class="tools">${cap.tools
-              .map(
-                (tool) =>
-                  `<li><code>${esc(tool.name)}</code>` +
-                  (tool.description === "" ? "" : `<span>${esc(firstSentence(tool.description))}</span>`) +
-                  `</li>`,
-              )
-              .join("")}</ul>`;
-      return `<div class="tool-group"><h3 class="tool-group-name">${esc(name)} ${health}</h3>${list}</div>`;
+      const heading = `<h3 class="tool-group-name">${esc(name)} ${health}</h3>`;
+      if (!up) {
+        return `<div class="tool-group">${heading}</div>`;
+      }
+      if (cap.tools.length === 0) {
+        return `<div class="tool-group">${heading}<p class="quiet">No tools exposed.</p></div>`;
+      }
+      // The list folds behind the heading: the count in the heading is the
+      // at-a-glance fact, and a dozen tool names per app would otherwise
+      // run the page long, above all on a phone.
+      const list = `<ul class="tools">${cap.tools
+        .map(
+          (tool) =>
+            `<li><code>${esc(tool.name)}</code>` +
+            (tool.description === "" ? "" : `<span>${esc(firstSentence(tool.description))}</span>`) +
+            `</li>`,
+        )
+        .join("")}</ul>`;
+      return `<details class="tool-group"><summary>${heading}</summary>${list}</details>`;
     })
     .join("");
   return `<div class="tool-groups">${groups}</div>`;
@@ -288,7 +308,15 @@ a{color:var(--link)}
 .badge{flex:none;padding:3px 9px;border-radius:999px;background:var(--deep);color:var(--tint);font-size:12px;font-weight:600;line-height:1.4}
 .tile-tag{margin:0;font-size:19px;line-height:1.35;font-weight:500;color:var(--deep);text-wrap:pretty}
 .tile-desc{margin:0;font-size:15.5px;line-height:1.55;color:var(--ink-2);text-wrap:pretty}
-.tile-points{margin:2px 0 0;padding:0 0 0 18px;font-size:15px;line-height:1.5;color:var(--ink)}
+.tile-more{position:relative;z-index:1;margin:0}
+.tile-more summary,.tool-group summary{cursor:pointer;list-style:none;user-select:none;-webkit-user-select:none}
+.tile-more summary::-webkit-details-marker,.tool-group summary::-webkit-details-marker{display:none}
+.tile-more summary{display:inline-flex;align-items:center;gap:8px;padding:2px 0;color:var(--deep);font-size:14px;font-weight:600;line-height:1.4}
+.tile-more summary::after,.tool-group summary::after{content:"";flex:none;width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);transition:transform .2s}
+.tile-more[open] summary::after,.tool-group[open] summary::after{transform:translateY(1px) rotate(-135deg)}
+.tile-more summary:focus-visible,.tool-group summary:focus-visible{outline:3px solid var(--link);outline-offset:3px;border-radius:4px}
+.tile-body{display:grid;gap:10px;margin-top:10px}
+.tile-points{margin:0;padding:0 0 0 18px;font-size:15px;line-height:1.5;color:var(--ink)}
 .tile-points li{margin:4px 0}
 .tile-points li::marker{color:var(--deep)}
 .chips{list-style:none;margin:4px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
@@ -305,10 +333,13 @@ a.tile-cta::after{content:"";position:absolute;inset:0;border-radius:22px}
 .sec{margin-top:64px;padding-top:28px;border-top:1px solid var(--hair);max-width:760px}
 .sec-title{margin:0;font:400 30px/1.15 var(--serif);letter-spacing:-.015em}
 .sec-lede{margin:12px 0 0;font-size:17px;line-height:1.55;color:var(--ink-2);max-width:60ch;text-wrap:pretty}
-.url{margin:18px 0 0;padding:14px 18px;border-radius:12px;background:var(--surface);border:1px solid var(--hair);font:15px/1.4 var(--mono);color:var(--ink);overflow-x:auto}
+.url{margin:18px 0 0;padding:14px 18px;border-radius:12px;background:var(--surface);border:1px solid var(--hair);font:15px/1.4 var(--mono);color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere}
 .url code{font:inherit}
 .tool-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:18px 32px;margin-top:26px}
-.tool-group-name{margin:0 0 8px;font:600 15px/1.3 var(--sans);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.tool-group summary{display:flex;align-items:center;gap:10px;padding:2px 0}
+.tool-group summary h3{flex:1}
+.tool-group[open] summary{margin-bottom:8px}
+.tool-group-name{margin:0;font:600 15px/1.3 var(--sans);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .health{font-size:12.5px;font-weight:500;color:var(--muted)}
 .health--bad{color:#b23b3b}
 @media (prefers-color-scheme:dark){.health--bad{color:#f08c8c}}
@@ -321,5 +352,5 @@ a.tile-cta::after{content:"";position:absolute;inset:0;border-radius:22px}
 .foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:72px;padding-top:18px;border-top:1px solid var(--hair);font-size:13.5px;color:var(--muted)}
 @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.tile{animation:none}}
-@media (max-width:520px){.store{padding:14px 16px 40px}.who{max-width:18ch}.hero{padding:40px 0 28px}.tile{padding:22px 20px 20px;border-radius:18px}a.tile-cta::after{border-radius:18px}.tile-name{font-size:30px}.sec{margin-top:48px}}
+@media (max-width:520px){.store{padding:14px 16px 40px}.who{max-width:18ch}.hero{padding:40px 0 28px}.lede{font-size:17px;margin-top:16px}.tiles{gap:12px}.tile{padding:20px 18px 18px;border-radius:18px;gap:10px}a.tile-cta::after{border-radius:18px}.tile-name{font-size:28px}.tile-tag{font-size:17px}.sec{margin-top:48px}.sec-title{font-size:26px}.sec-lede{font-size:16px}.url{padding:12px 14px;font-size:14px}.actions .btn{flex:1 1 auto;text-align:center}.foot{margin-top:56px}}
 `.trim();
