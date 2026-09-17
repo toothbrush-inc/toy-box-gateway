@@ -9,6 +9,10 @@ tile, with a name (`label`), a `tagline`, a `description`, up to four
 come from the app's manifest, the gateway config, or both; see
 [Where the words come from](#where-the-words-come-from) below.
 
+The paragraph and the highlights fold behind a "More about <name>" toggle,
+a native `<details>` element (the page has no scripts), so every card is a
+name, a tagline, its chips and its actions until the reader asks for more.
+
 Under the copy, each tile says how the app can be used, as small chips:
 **Web app** when it has a page, **Works with your assistant** when it is a
 mounted capability (so its tools come through the MCP address), and **Open
@@ -28,7 +32,9 @@ them. The footer shows
 What the anonymous reader gets is the catalogue and the MCP address, and
 nothing about the running system. A **signed-in** viewer — browser session
 or API bearer — also sees what is mounted: each capability's tools (so an
-agent-only capability is discoverable) and its health. `Accept: text/html`
+agent-only capability is discoverable) and its health. Each tool list folds
+behind its heading, which keeps the count, so a dozen tools per app do not
+run the page long. `Accept: text/html`
 renders the page; anything else gets the same facts as JSON, scoped the same
 way. A bad bearer token is refused, not downgraded to anonymous.
 
