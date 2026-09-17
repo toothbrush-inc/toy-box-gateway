@@ -79,7 +79,8 @@ cap of eight in-flight upstream operations. Overflow returns 429; timeouts,
 malformed bodies and oversized responses return a controlled 502. Every
 request handler also catches unexpected storage/validation failures.
 Hosted credential access additionally requires the nonce-resolved user to
-appear in `serve.credentialUsers["provider:slot"]`. Hosted `/profile` and `/call`
+own the slot: their own `<tenant>_<role>` slots (tenant = their identity
+slug) or an entry in `serve.credentialUsers["provider:slot"]`. Hosted `/profile` and `/call`
 also reject missing or invalid user nonces; see [config.md](config.md).
 Forwarded MCP calls have a 60-second total budget which progress messages
 cannot extend; peer calls may use a shorter requested timeout.

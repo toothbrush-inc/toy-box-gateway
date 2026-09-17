@@ -32,7 +32,7 @@ import {
 } from "@dvd-toy-box/vault";
 
 import type { AuditEntry, AuditWriter } from "./audit.js";
-import { legacyUserSlug, userSlug } from "./call-scope.js";
+import { legacyUserSlug, userMayUseSlot, userSlug } from "./call-scope.js";
 import type { CapabilitySpec } from "./config.js";
 import { redactErrorMessage } from "./redact.js";
 
@@ -205,7 +205,9 @@ export interface PeerToolResult {
 
 export interface EgressServerOptions {
   tokens: Map<string, string>;
-  /** Present in hosted mode: provider:slot -> users allowed to use it. */
+  /** Present in hosted mode: provider:slot -> users allowed to use it. A
+   * user's own tenant-scoped slots are allowed without an entry (see
+   * userMayUseSlot). */
   credentialUsers?: Readonly<Record<string, readonly string[]>>;
   fetchTimeoutMs?: number;
   maxResponseBytes?: number;
@@ -518,7 +520,7 @@ export class EgressServer {
       return;
     }
     if (this.options.credentialUsers !== undefined &&
-        (user === undefined || !this.options.credentialUsers[`${provider}:${slot}`]?.includes(user))) {
+        !userMayUseSlot(user, provider, slot, this.options.credentialUsers)) {
       deny({ status: 403, code: "credential_denied", message: "this caller may not use that connection" });
       return;
     }
@@ -659,7 +661,7 @@ export class EgressServer {
       return;
     }
     if (this.options.credentialUsers !== undefined &&
-        (user === undefined || !this.options.credentialUsers[`${provider}:${slot}`]?.includes(user))) {
+        !userMayUseSlot(user, provider, slot, this.options.credentialUsers)) {
       deny({ status: 403, code: "credential_denied", message: "this caller may not use that connection" });
       return;
     }
