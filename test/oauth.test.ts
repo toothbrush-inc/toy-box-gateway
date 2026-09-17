@@ -56,7 +56,7 @@ interface FakeGoogle {
 }
 
 async function startFakeGoogle(): Promise<FakeGoogle> {
-  let email = "dvd@thephotobase.com";
+  let email = "alice@example.com";
   const server: Server = createServer((request, response) => {
     if ((request.url ?? "").startsWith("/token")) {
       const payload = Buffer.from(
@@ -127,7 +127,7 @@ async function startHarness(serveExtra: Record<string, unknown> = {}): Promise<O
     issuerUrl: serve.publicUrl,
     store: new OAuthDiskStore(join(dir, "oauth")),
     signingKey: randomBytes(32),
-    allowedEmails: ["dvd@thephotobase.com"],
+    allowedEmails: ["alice@example.com"],
     google: { clientId: "login-client", clientSecret: "login-secret" },
     googleEndpoints: google.endpoints,
     accessTokenTtlSec: 3600,
@@ -320,7 +320,7 @@ describe("oauth authorization server", () => {
     expect(consent.location).toBeNull();
     expect(consent.html).toContain("Totally Legit Assistant");
     expect(consent.html).toContain("https://evil.example");
-    expect(consent.html).toContain("dvd@thephotobase.com");
+    expect(consent.html).toContain("alice@example.com");
     expect(consent.token).not.toBe("");
 
     // Deny: the client hears access_denied and never sees a code.
@@ -378,7 +378,7 @@ describe("oauth authorization server", () => {
     const verifyOk = await fetch(`${harness.url}/session/verify`, { headers: { Cookie: cookie } });
     expect(verifyOk.status).toBe(204);
     // The identity Caddy copies onto the fronted app's request.
-    expect(verifyOk.headers.get("x-forwarded-user")).toBe("dvd@thephotobase.com");
+    expect(verifyOk.headers.get("x-forwarded-user")).toBe("alice@example.com");
     const verifyMissing = await fetch(`${harness.url}/session/verify`);
     expect(verifyMissing.status).toBe(401);
     expect(verifyMissing.headers.get("x-forwarded-user")).toBeNull();
@@ -471,7 +471,7 @@ describe("oauth authorization server", () => {
     store.putRefresh("tok1", {
       family: "fam1",
       clientId: "abc",
-      email: "dvd@thephotobase.com",
+      email: "alice@example.com",
       scopes: ["mcp"],
       expiresAt: Math.floor(Date.now() / 1000) + 1000,
     });
