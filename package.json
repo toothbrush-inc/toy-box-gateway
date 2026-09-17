@@ -33,7 +33,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@local/vault": "github:davidd8/local-vault",
+    "@local/vault": "github:davidd8/local-vault#fd647f536c30658f5917c090d43c2fa37cdfdba4",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
