@@ -5,6 +5,7 @@ import { z } from "zod";
 
 const TOKEN = /^[a-z][a-z0-9_-]*$/;
 const RESERVED_ID = "gateway";
+const HTTP_URL = z.string().url().refine((value) => ["https:", "http:"].includes(new URL(value).protocol), "must be an http or https URL");
 
 export const DEFAULT_AUDIT_MAX_BYTES = 5 * 1024 * 1024;
 export const DEFAULT_AUDIT_KEEP_FILES = 5;
@@ -28,7 +29,7 @@ const StoreCopyShape = {
   badge: z.string().min(1).max(20).optional(),
   accent: z.enum(STORE_ACCENTS).optional(),
   /** The open-source repository, for readers who want to run it themselves. */
-  repo: z.string().url().optional(),
+  repo: HTTP_URL.optional(),
 } as const;
 
 export const StoreCopySchema = z.object(StoreCopyShape);
@@ -155,6 +156,13 @@ export const GatewayConfigSchema = z.object({
        * `forward_auth` on cal.<host> sees the same sign-in. Off by default
        * (host-only cookie). Pair it with `allowedHosts` listing those hosts. */
       sessionCookieDomain: z.string().min(1).optional(),
+      /** Who may use the management tools over HTTP (gateway_reconnect,
+       * the profile, grants): user ids as the auth stage names them — the
+       * email under `oauth`, the token label under `static`. Empty means
+       * nobody over HTTP; the stdio gateway's one user is always the owner. */
+      owners: z.array(z.string().min(1)).default([]),
+      /** Explicit user access to each provider:slot; unlisted credentials are denied over HTTP. */
+      credentialUsers: z.record(z.string(), z.array(z.string().min(1))).default({}),
       allowedOrigins: z
         .array(z.string().min(1))
         .default(["https://claude.ai", "https://claude.com"]),
@@ -199,7 +207,7 @@ export const GatewayConfigSchema = z.object({
   links: z
     .array(
       z.object({
-        href: z.string().url(),
+        href: HTTP_URL,
         ...StoreCopyShape,
       }),
     )

@@ -34,7 +34,11 @@ export const ViewSpecInputSchema = z.object({
   id: z.string().regex(TOKEN).max(64),
   title: z.string().min(1).max(120),
   description: z.string().max(500).optional(),
-  owner: z.string().min(1).max(120),
+  /** Whose view it is: audit attribution and the identity its queries run
+   * as. Over HTTP the signed-in caller is stamped here and anything the
+   * client sent is ignored; a local stdio gateway has no sign-in and takes
+   * the field as given, so there it is required. */
+  owner: z.string().min(1).max(120).optional(),
   sensitivity: z.enum(SENSITIVITIES),
   queries: z
     .array(ViewQuerySchema)
@@ -49,6 +53,7 @@ export const ViewSpecInputSchema = z.object({
 });
 
 export const ViewSpecSchema = ViewSpecInputSchema.extend({
+  owner: z.string().min(1).max(120),
   createdAt: isoDate,
   updatedAt: isoDate,
 });

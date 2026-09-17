@@ -211,6 +211,45 @@ export function renderNoticeHtml(
   return page(title, nav + body, "page--single");
 }
 
+/** What the MCP consent page needs to say: who is asking, as whom, and
+ * where the code goes. Mirrors the provider's ConsentPrompt without the
+ * scopes, which mean nothing to a person. */
+export interface ConsentPage {
+  token: string;
+  clientId: string;
+  clientName?: string;
+  redirectUri: string;
+  email: string;
+}
+
+/** The one page in the sign-in that asks a question: an MCP client wants a
+ * code, and the person decides whether it gets one. The redirect target is
+ * shown because that is where the code will be sent, and a client anyone
+ * can register could have named anywhere. */
+export function renderConsentHtml(prompt: ConsentPage, action: string): string {
+  const client = prompt.clientName ?? prompt.clientId;
+  let destination = prompt.redirectUri;
+  try {
+    destination = new URL(prompt.redirectUri).origin;
+  } catch {
+    // Shown as written.
+  }
+  const nav = `<nav class="top">${INDEX_NAV}</nav>`;
+  const body =
+    `<header class="masthead"><h1>Allow ${esc(client)}?</h1></header>` +
+    `<p class="empty">It wants to use your apps here as <strong>${esc(prompt.email)}</strong>. ` +
+    `If you allow it, a sign-in code is sent to <strong>${esc(destination)}</strong>` +
+    (destination === prompt.redirectUri ? "" : ` <small>(${esc(prompt.redirectUri)})</small>`) +
+    `.</p>` +
+    `<p class="empty">If you did not just connect ${esc(client)} yourself, deny.</p>` +
+    `<form method="post" action="${esc(action)}" class="consent">` +
+    `<input type="hidden" name="token" value="${esc(prompt.token)}">` +
+    `<button type="submit" name="decision" value="allow">Allow</button> ` +
+    `<button type="submit" name="decision" value="deny">Deny</button>` +
+    `</form>`;
+  return page(`Allow ${client}?`, nav + body, "page--single");
+}
+
 export interface ViewIndexEntry {
   spec: ViewSpec;
   snapshot: ViewSnapshot | undefined;

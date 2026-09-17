@@ -6,7 +6,7 @@ import { openVault } from "@dvd-toy-box/vault";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { CallToolResultSchema, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, CallToolResultSchema, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AuditWriter, type AuditEntry } from "../src/audit.js";
@@ -306,4 +306,28 @@ describe("gateway", () => {
     );
     expect(revived.structuredContent).toEqual({ ok: true, data: { echoed: "back" } });
   });
+});
+
+it("ends a child call after 60 seconds even when progress keeps arriving", async () => {
+  const harness = await startHarness();
+  let ticks = 0;
+  harness.fake.server.server.setRequestHandler(CallToolRequestSchema, async (_request, extra) => {
+    await new Promise<void>((resolve) => {
+      const timer = setInterval(() => {
+        void extra.sendNotification({ method: "notifications/progress", params: { progressToken: extra._meta!.progressToken!, progress: ++ticks } });
+      }, 10_000);
+      extra.signal.addEventListener("abort", () => { clearInterval(timer); resolve(); }, { once: true });
+    });
+    return { content: [{ type: "text", text: "cancelled" }] };
+  });
+  vi.useFakeTimers();
+  try {
+    const pending = harness.client.callTool({ name: "weather__wait" }, CallToolResultSchema, {
+      timeout: 120_000, onprogress: () => undefined,
+    });
+    await vi.advanceTimersByTimeAsync(60_001);
+    const result = await pending;
+    expect(result.structuredContent).toMatchObject({ ok: false, error: { code: "call_failed" } });
+    expect(ticks).toBeGreaterThan(0);
+  } finally { vi.useRealTimers(); }
 });

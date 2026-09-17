@@ -52,6 +52,8 @@ async function startHarness(
       lede?: string;
       contact?: { email: string; byline?: string };
     };
+    owners?: string[];
+    sameClient?: boolean;
   } = {},
 ): Promise<HttpHarness> {
   const dir = mkdtempSync(join(tmpdir(), "gateway-http-"));
@@ -85,6 +87,7 @@ async function startHarness(
         host: "127.0.0.1",
         publicUrl: "http://127.0.0.1",
         auth: { stage: "static" },
+        ...(options.owners === undefined ? {} : { owners: options.owners }),
       },
     }),
     configPath: join(dir, "gateway.config.json"),
@@ -105,7 +108,12 @@ async function startHarness(
   const http = await startHttpGateway({
     core,
     serve,
-    verifier: staticTokenVerifier(tokens, serve.publicUrl),
+    verifier: options.sameClient ? {
+      async verifyAccessToken(token) {
+        const auth = await staticTokenVerifier(tokens, serve.publicUrl).verifyAccessToken(token);
+        return { ...auth, clientId: "shared-client" };
+      },
+    } : staticTokenVerifier(tokens, serve.publicUrl),
     ...(options.links === undefined ? {} : { links: options.links }),
     ...(options.store === undefined ? {} : { store: options.store }),
     log: () => undefined,
@@ -615,4 +623,152 @@ describe("store page", () => {
     expect(html).toContain('href="/"');
     expect(html).not.toContain("Open Weather");
   });
+});
+
+const OWNER_TOOLS = [
+  "gateway_get_profile",
+  "gateway_set_profile",
+  "gateway_grant",
+  "gateway_revoke_grant",
+  "gateway_reconnect",
+];
+
+describe("owner-only tools over http", () => {
+  it("hides and refuses the management tools for everyone but configured owners", async () => {
+    const harness = await startHarness({ owners: ["dev"] });
+    const owner = connectedClient(harness, "secret-token-1");
+    await owner.connect();
+    const other = connectedClient(harness, "secret-token-2");
+    await other.connect();
+
+    const ownerNames = (await owner.client.listTools()).tools.map((tool) => tool.name);
+    expect(ownerNames).toEqual(expect.arrayContaining(OWNER_TOOLS));
+    const otherNames = (await other.client.listTools()).tools.map((tool) => tool.name);
+    for (const name of OWNER_TOOLS) {
+      expect(otherNames).not.toContain(name);
+    }
+    expect(otherNames).toContain("gateway_status");
+    expect(otherNames).toContain("weather__echo");
+
+    // Hidden is not enough: a call by name is refused and audited.
+    const refused = await other.client.callTool(
+      { name: "gateway_revoke_grant", arguments: { capability: "weather", connection: "purpleair:default" } },
+      CallToolResultSchema,
+    );
+    expect(refused.isError).toBe(true);
+    expect((refused.structuredContent as { error: { code: string } }).error.code).toBe("owner_only");
+    const row = readFileSync(harness.auditPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as AuditEntry)
+      .find((entry) => entry.tool === "gateway_revoke_grant");
+    expect(row).toMatchObject({ outcome: "denied", denied_by: "policy", error_code: "owner_only", user: "other" });
+
+    const allowed = await owner.client.callTool({ name: "gateway_get_profile", arguments: {} }, CallToolResultSchema);
+    expect(allowed.isError).not.toBe(true);
+  });
+
+  it("gives nobody the management tools when no owners are configured", async () => {
+    const harness = await startHarness();
+    const dev = connectedClient(harness, "secret-token-1");
+    await dev.connect();
+    const names = (await dev.client.listTools()).tools.map((tool) => tool.name);
+    for (const name of OWNER_TOOLS) {
+      expect(names).not.toContain(name);
+    }
+    const refused = await dev.client.callTool({ name: "gateway_get_profile", arguments: {} }, CallToolResultSchema);
+    expect(refused.isError).toBe(true);
+    expect((refused.structuredContent as { error: { code: string } }).error.code).toBe("owner_only");
+  });
+});
+
+describe("view owner over http", () => {
+  it("stamps the signed-in user as the owner whatever the client wrote", async () => {
+    const harness = await startHarness();
+    const dev = connectedClient(harness, "secret-token-1");
+    await dev.connect();
+    const view = {
+      id: "mine",
+      title: "Mine",
+      owner: "victim@example.com",
+      sensitivity: "shareable",
+      queries: [{ key: "e", tool: "weather__echo", arguments: { text: "hi" } }],
+      transform: "(input) => ({ title: 'Mine', sections: [{ kind: 'text', text: input.e.data.echoed }] })",
+      refresh: { intervalMs: null },
+    };
+    const pinned = await dev.client.callTool({ name: "pin_view", arguments: { view } }, CallToolResultSchema);
+    expect((pinned.structuredContent as { ok: boolean }).ok).toBe(true);
+    expect(harness.core.views?.get("mine")?.owner).toBe("dev");
+    const rows = readFileSync(harness.auditPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as AuditEntry);
+    expect(rows.find((entry) => entry.tool === "call:weather__echo")).toMatchObject({
+      capability: "view-mine",
+      user: "dev",
+    });
+
+    // The field is optional over http: the sign-in is the owner.
+    const { owner: _ignored, ...withoutOwner } = view;
+    const previewed = await dev.client.callTool(
+      { name: "preview_view", arguments: { view: { ...withoutOwner, id: "mine2" } } },
+      CallToolResultSchema,
+    );
+    expect((previewed.structuredContent as { ok: boolean }).ok).toBe(true);
+  });
+});
+
+it("keeps private views, previews and MCP resources with their owner", async () => {
+  const harness = await startHarness();
+  const alice = connectedClient(harness, "secret-token-1");
+  const bob = connectedClient(harness, "secret-token-2");
+  await alice.connect(); await bob.connect();
+  const view = {
+    id: "private", title: "Private", sensitivity: "private",
+    queries: [{ key: "e", tool: "weather__echo", arguments: { text: "secret" } }],
+    transform: "input => ({ title: 'Private', sections: [{ kind: 'text', text: input.e.data.echoed }] })",
+    refresh: { intervalMs: null },
+  };
+  const pin = await alice.client.callTool({ name: "pin_view", arguments: { view } }, CallToolResultSchema);
+  expect(pin.isError).not.toBe(true);
+  expect((await bob.client.listResources()).resources).toHaveLength(0);
+  await expect(bob.client.readResource({ uri: "view://private" })).rejects.toThrow();
+  await expect(bob.client.subscribeResource({ uri: "view://private" })).rejects.toThrow();
+  for (const name of ["run_view", "unpin_view"]) {
+    expect((await bob.client.callTool({ name, arguments: { id: "private" } }, CallToolResultSchema)).isError).toBe(true);
+  }
+  expect((await bob.client.callTool({ name: "pin_view", arguments: { view } }, CallToolResultSchema)).isError).toBe(true);
+  const headers = { Authorization: "Bearer secret-token-2" };
+  expect((await fetch(`${harness.url}/views/private.json`, { headers })).status).toBe(404);
+  const list = await fetch(`${harness.url}/views`, { headers });
+  expect(await list.text()).not.toContain('"private"');
+  const preview = await harness.core.views!.preview({ ...view, owner: "dev" }, "dev");
+  if (!preview.ok) throw new Error(preview.message);
+  expect((await fetch(`${harness.url}/views/preview/${preview.preview.token}`, { headers })).status).toBe(404);
+  expect((await fetch(`${harness.url}/views/private.json`, { headers: { Authorization: "Bearer secret-token-1" } })).status).toBe(200);
+  const shared = await alice.client.callTool({ name: "pin_view", arguments: { view: { ...view, sensitivity: "shareable" } } }, CallToolResultSchema);
+  expect(shared.isError).not.toBe(true);
+  expect((await bob.client.listResources()).resources).toHaveLength(1);
+  expect((await bob.client.callTool({ name: "unpin_view", arguments: { id: "private" } }, CallToolResultSchema)).isError).toBe(true);
+});
+
+it("binds MCP sessions to the user even when the OAuth client is shared", async () => {
+  const harness = await startHarness({ sameClient: true });
+  const alice = connectedClient(harness, "secret-token-1");
+  await alice.connect();
+  const response = await fetch(`${harness.url}/mcp`, {
+    method: "POST",
+    headers: { Authorization: "Bearer secret-token-2", "Content-Type": "application/json", Accept: "application/json, text/event-stream", "mcp-session-id": alice.transport.sessionId! },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+  });
+  expect(response.status).toBe(403);
+});
+
+it("serves CSP, frame and referrer protections and tolerates malformed cookies", async () => {
+  const harness = await startHarness();
+  const response = await fetch(harness.url, { headers: { Cookie: "gw_session=%zz" } });
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
+  expect(response.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
+  expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
 });

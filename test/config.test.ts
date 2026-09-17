@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { CapabilitySpecSchema, GatewayConfigSchema, loadGatewayConfig, resolveConfigPath } from "../src/config.js";
+import { ManifestStoreSchema, CapabilitySpecSchema, GatewayConfigSchema, loadGatewayConfig, resolveConfigPath } from "../src/config.js";
 
 const dirs: string[] = [];
 
@@ -121,4 +121,12 @@ describe("resolveConfigPath", () => {
     expect(() => resolveConfigPath([], {}, dir)).toThrow(/--config/);
     expect(() => resolveConfigPath(["--config"], {}, dir)).toThrow(/requires a path/);
   });
+});
+
+
+it("refuses executable URL schemes in config and manifest links", () => {
+  for (const href of ["javascript:alert(1)", "data:text/html,hello", "file:///etc/passwd"]) {
+    expect(GatewayConfigSchema.safeParse({ capabilities: [validCapability], links: [{ label: "Unsafe", href }] }).success).toBe(false);
+    expect(ManifestStoreSchema.safeParse({ name: "Unsafe", repo: href }).success).toBe(false);
+  }
 });

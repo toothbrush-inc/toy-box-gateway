@@ -11,7 +11,7 @@ import { AuditWriter } from "../src/audit.js";
 import { GatewayConfigSchema, type GatewayConfig } from "../src/config.js";
 import { createGatewayCore, type GatewayCore } from "../src/gateway.js";
 import { signJwt, verifyJwt } from "../src/http/oauth/jwt.js";
-import { GatewayOAuthProvider } from "../src/http/oauth/provider.js";
+import { GatewayOAuthProvider, safeNext } from "../src/http/oauth/provider.js";
 import { OAuthDiskStore } from "../src/http/oauth/store.js";
 import { startHttpGateway, type HttpGateway } from "../src/http/server.js";
 import { startFakeWeather } from "./fakes.js";
@@ -171,15 +171,18 @@ async function registerClient(url: string): Promise<{ client_id: string; client_
   return (await response.json()) as { client_id: string; client_secret: string };
 }
 
-/** Runs authorize -> google callback; returns the redirect back to the client. */
-async function loginThrough(
+/** Runs authorize -> google callback. An allowed account lands on the
+ * consent page (200, with a one-time token in the form); a refused one is
+ * sent straight back to the client with an error. */
+async function reachConsent(
   url: string,
   clientId: string,
   challenge: string,
-): Promise<URL> {
+  redirectUri = "http://127.0.0.1:9999/cb",
+): Promise<{ status: number; location: string | null; html: string; token: string }> {
   const authorize = await fetch(
     `${url}/authorize?response_type=code&client_id=${clientId}` +
-      `&redirect_uri=${encodeURIComponent("http://127.0.0.1:9999/cb")}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
       `&code_challenge=${challenge}&code_challenge_method=S256&state=client-state`,
     { redirect: "manual" },
   );
@@ -189,8 +192,31 @@ async function loginThrough(
   const callback = await fetch(`${url}/auth/google/callback?state=${gstate}&code=fake-code`, {
     redirect: "manual",
   });
-  expect(callback.status).toBe(302);
-  return new URL(callback.headers.get("location") ?? "");
+  const html = callback.status === 200 ? await callback.text() : "";
+  const token = /name="token" value="([^"]+)"/u.exec(html)?.[1] ?? "";
+  return { status: callback.status, location: callback.headers.get("location"), html, token };
+}
+
+async function answerConsent(url: string, token: string, decision: "allow" | "deny"): Promise<Response> {
+  return fetch(`${url}/consent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token, decision }).toString(),
+    redirect: "manual",
+  });
+}
+
+/** authorize -> google -> consent (allowed); returns the redirect back to the client. */
+async function loginThrough(url: string, clientId: string, challenge: string): Promise<URL> {
+  const consent = await reachConsent(url, clientId, challenge);
+  if (consent.status === 302) {
+    return new URL(consent.location ?? "");
+  }
+  expect(consent.status).toBe(200);
+  expect(consent.token).not.toBe("");
+  const answer = await answerConsent(url, consent.token, "allow");
+  expect(answer.status).toBe(303);
+  return new URL(answer.headers.get("location") ?? "");
 }
 
 describe("oauth authorization server", () => {
@@ -262,9 +288,64 @@ describe("oauth authorization server", () => {
     harness.google.setEmail("intruder@example.com");
     const client = await registerClient(harness.url);
     const { challenge } = pkcePair();
-    const back = await loginThrough(harness.url, client.client_id, challenge);
+    const consent = await reachConsent(harness.url, client.client_id, challenge);
+    // no consent page for a refused account: straight back to the client
+    expect(consent.status).toBe(302);
+    const back = new URL(consent.location ?? "");
     expect(back.searchParams.get("error")).toBe("access_denied");
     expect(back.searchParams.get("code")).toBeNull();
+  });
+
+  it("asks before a code goes anywhere: the page names the client and the destination, and only Allow mints one", async () => {
+    const harness = await startHarness();
+    // Registration is open, so this is the attack: a client anyone made,
+    // pointing at a host the person has never heard of.
+    const registered = await fetch(`${harness.url}/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        redirect_uris: ["https://evil.example/cb"],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code"],
+        response_types: ["code"],
+        client_name: "Totally Legit Assistant",
+      }),
+    });
+    expect(registered.status).toBe(201);
+    const client = (await registered.json()) as { client_id: string };
+    const { challenge } = pkcePair();
+
+    const consent = await reachConsent(harness.url, client.client_id, challenge, "https://evil.example/cb");
+    expect(consent.status).toBe(200);
+    expect(consent.location).toBeNull();
+    expect(consent.html).toContain("Totally Legit Assistant");
+    expect(consent.html).toContain("https://evil.example");
+    expect(consent.html).toContain("dvd@thephotobase.com");
+    expect(consent.token).not.toBe("");
+
+    // Deny: the client hears access_denied and never sees a code.
+    const denied = await answerConsent(harness.url, consent.token, "deny");
+    expect(denied.status).toBe(303);
+    const back = new URL(denied.headers.get("location") ?? "");
+    expect(back.origin + back.pathname).toBe("https://evil.example/cb");
+    expect(back.searchParams.get("error")).toBe("access_denied");
+    expect(back.searchParams.get("state")).toBe("client-state");
+    expect(back.searchParams.get("code")).toBeNull();
+
+    // The token was single use: a second answer, even Allow, is refused.
+    const replay = await answerConsent(harness.url, consent.token, "allow");
+    expect(replay.status).toBe(400);
+    // And a made-up token gets nothing either.
+    const forged = await answerConsent(harness.url, "0".repeat(48), "allow");
+    expect(forged.status).toBe(400);
+
+    // A fresh round, allowed this time, does carry a code.
+    const again = await reachConsent(harness.url, client.client_id, challenge, "https://evil.example/cb");
+    const allowed = await answerConsent(harness.url, again.token, "allow");
+    expect(allowed.status).toBe(303);
+    const withCode = new URL(allowed.headers.get("location") ?? "");
+    expect(withCode.searchParams.get("code")).not.toBeNull();
+    expect(withCode.searchParams.get("state")).toBe("client-state");
   });
 
   it("issues browser sessions that unlock the views surface", async () => {
@@ -401,4 +482,50 @@ describe("oauth authorization server", () => {
     expect(new OAuthDiskStore(dir).getRefresh("tok1")?.revoked).toBe(true);
     expect(readFileSync(join(dir, "refresh.json"), "utf8")).not.toContain("client_secret");
   });
+});
+
+it("rechecks allowedEmails for access, refresh and browser sessions and persists logout revocation", async () => {
+  const dir = tempDir();
+  const signingKey = randomBytes(32);
+  const opts = {
+    issuerUrl: "https://gw.example.com", signingKey,
+    google: { clientId: "id", clientSecret: "secret" },
+    accessTokenTtlSec: 3600, refreshTokenTtlSec: 86400,
+    scopesSupported: ["mcp"], log: () => undefined,
+  };
+  const store = new OAuthDiskStore(dir);
+  const before = new GatewayOAuthProvider({ ...opts, store, allowedEmails: ["alice@example.com"] });
+  const cookie = signJwt(signingKey, { iss: opts.issuerUrl, aud: "session", sub: "alice@example.com", expiresInSec: 3600 });
+  const access = signJwt(signingKey, { iss: opts.issuerUrl, aud: "mcp", sub: "alice@example.com", client_id: "client", expiresInSec: 3600 });
+  store.putRefresh("refresh", { family: "family", clientId: "client", email: "alice@example.com", scopes: ["mcp"], expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+  expect(before.verifySessionCookie(cookie)).toBe("alice@example.com");
+  expect((await before.verifyAccessToken(access)).extra?.["user"]).toBe("alice@example.com");
+  const removed = new GatewayOAuthProvider({ ...opts, store, allowedEmails: [] });
+  expect(() => removed.verifyAccessToken(access)).toThrow();
+  expect(removed.verifySessionCookie(cookie)).toBeNull();
+  expect(() => removed.exchangeRefreshToken({ client_id: "client", redirect_uris: ["https://client.example/cb"] }, "refresh")).toThrow();
+  expect(store.getRefresh("refresh")?.revoked).toBe(true);
+  before.revokeSessionCookie(cookie);
+  const restarted = new GatewayOAuthProvider({ ...opts, store: new OAuthDiskStore(dir), allowedEmails: ["alice@example.com"] });
+  expect(restarted.verifySessionCookie(cookie)).toBeNull();
+});
+
+it("invalidates a browser token on logout, including a copied cookie", async () => {
+  const harness = await startHarness();
+  const login = await fetch(`${harness.url}/login`, { redirect: "manual" });
+  const state = new URL(login.headers.get("location")!).searchParams.get("state");
+  const callback = await fetch(`${harness.url}/auth/google/callback?state=${state}&code=ok`, { redirect: "manual" });
+  const cookie = callback.headers.get("set-cookie")!.split(";")[0]!;
+  expect((await fetch(`${harness.url}/session/verify`, { headers: { Cookie: cookie } })).status).toBe(204);
+  await fetch(`${harness.url}/logout`, { headers: { Cookie: cookie }, redirect: "manual" });
+  expect((await fetch(`${harness.url}/session/verify`, { headers: { Cookie: cookie } })).status).toBe(401);
+  expect((await fetch(harness.url, { headers: { Cookie: "gw_session=%zz" } })).status).toBe(200);
+});
+
+
+it("rejects redirect parser control-character and backslash tricks", () => {
+  for (const value of ["/\t/evil.example", "/\r/evil.example", "/\n/evil.example", "/\\evil.example", "//evil.example", "https://evil.example"]) {
+    expect(safeNext(value, "gw.example.com")).toBeUndefined();
+  }
+  expect(safeNext("/views?x=1", "gw.example.com")).toBe("/views?x=1");
 });

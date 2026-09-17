@@ -122,7 +122,9 @@ server).
 | `host` | string | `127.0.0.1` |
 | `publicUrl` | URL | required; the hostname is also the store's default wordmark |
 | `allowedHosts` | string[] | unset (the `publicUrl` hostname) |
-| `sessionCookieDomain` | string | unset (host-only cookie) |
+| `sessionCookieDomain` | string | unset (host-only cookie; see trust warning below) |
+| `credentialUsers` | object mapping `provider:slot` to user-id arrays | `{}`; denies hosted credential use until configured |
+| `owners` | string[] | `[]`: over HTTP, nobody gets the management tools |
 | `allowedOrigins` | string[] | `["https://claude.ai", "https://claude.com"]` |
 | `session.ttlMs` | integer | 8 hours |
 | `session.maxSessions` | integer | 20 |
@@ -130,10 +132,21 @@ server).
 | `session.maxEventsPerSession` | integer | 500 |
 | `auth` | object | one of the two stages below |
 
+**Owners.** `gateway_reconnect`, the profile tools and the grant tools act
+on the shared vault and on children every user shares, so over HTTP only
+the users listed in `owners` see or may call them: the email under the
+`oauth` stage, the token label under `static`. Everyone else gets
+`owner_only`. The stdio gateway has one user, who is always the owner.
+
 `auth.stage: "static"`: bearer tokens read from the env var named by
 `tokensEnv` (default `GATEWAY_BEARER_TOKENS`).
 
 `auth.stage: "oauth"`: Google sign-in for browsers plus MCP OAuth for agents.
+MCP clients register themselves, so after Google confirms who is signing in
+the gateway shows a consent page naming the client and the address the
+code will be sent to; only an explicit Allow mints the code. A client
+registered by someone else, pointing at their own host, gets nothing
+without that click.
 
 | Field | Type | Default |
 |---|---|---|
@@ -179,3 +192,39 @@ public hostname and generic copy.
 | `lede` | string ≤400 | The paragraph under it. |
 | `contact.email` | email | Powers the "Suggest an app" and "Say hello" buttons. Omit `contact` to hide the section. |
 | `contact.byline` | string ≤120 | Who the person is, in a few words ("Built by David"). Shown in the footer. |
+
+### Hosted credential access
+
+`serve.credentialUsers` explicitly assigns access to each connection in the
+shared vault. The broker resolves the call nonce to the signed-in user and
+checks this list before reading a secret or serving a cached token. Existing
+capability declarations and grants are still required. For example:
+
+```json
+{
+  "serve": {
+    "owners": ["alice@example.com"],
+    "credentialUsers": {
+      "google:alice_personal": ["alice@example.com"],
+      "purpleair:default": ["alice@example.com", "bob@example.com"]
+    }
+  }
+}
+```
+
+This is a partial config example. Unlisted connections and calls without a
+valid user nonce are denied by `/fetch` and `/token` in hosted mode. Configure
+all required slots when upgrading, including intentionally shared API keys.
+Hosted profile and peer-call requests also require a valid user nonce; they
+never fall back to the operator profile. The Google connect route uses the same mapping and binds its pending state to
+the user who started it. Stdio mode keeps its local shared-vault behavior.
+
+Removing an email from `allowedEmails` and restarting the gateway invalidates
+that user's access tokens, refresh tokens and browser cookies. Logout revokes
+the presented browser token on disk, including copies of it, until expiry.
+
+**Cookie domain trust:** keep `sessionCookieDomain` unset unless every sibling
+host is trusted. Domain cookies reach sibling hosts before gateway code can
+intervene. On trusted sibling proxies, remove the Cookie header before
+forwarding to the app after `forward_auth`; only forward `X-Forwarded-User`.
+Logout cannot undo a cookie stolen and used before revocation.

@@ -24,9 +24,25 @@ export class OAuthDiskStore {
   private clients = new Map<string, OAuthClientInformationFull>();
   private refresh = new Map<string, RefreshRecord>();
 
+  private revokedSessions = new Map<string, number>();
+
   constructor(private readonly dir: string) {
+    this.revokedSessions = new Map(Object.entries(this.load("revoked-sessions.json")));
     this.clients = new Map(Object.entries(this.load("clients.json")));
     this.refresh = new Map(Object.entries(this.load("refresh.json")));
+  }
+
+  isSessionRevoked(id: string): boolean {
+    return this.revokedSessions.has(id);
+  }
+
+  revokeSession(id: string, expiresAt: number): void {
+    const now = Math.floor(Date.now() / 1000);
+    for (const [key, expiry] of this.revokedSessions) {
+      if (expiry <= now) this.revokedSessions.delete(key);
+    }
+    this.revokedSessions.set(id, expiresAt);
+    this.persist("revoked-sessions.json", this.revokedSessions);
   }
 
   getClient(clientId: string): OAuthClientInformationFull | undefined {

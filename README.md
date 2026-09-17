@@ -7,7 +7,7 @@ of hand-built apps: open one in the browser, or add one address to Claude or
 Cursor and every app becomes a set of tools in chat, with no keys to copy. For
 a developer, it is an open-source **MCP gateway**: one stdio (or public HTTP)
 MCP server that mounts capability MCP servers as child processes, re-exposes
-their tools under prefixed names, holds the keys so the apps never do, checks
+their tools under prefixed names, brokers credential use, checks
 a grant on every call, and keeps an audit log of who used what.
 
 The gateway is strictly additive. Every capability that follows the
@@ -24,8 +24,8 @@ weather app holds your PurpleAir key; the calendar app holds a token with
 permanent access to your Google calendars. Trusting an app means trusting it
 completely — and "revoking access" means hoping the app respects your wishes.
 
-Under the gateway, apps don't hold keys. They hold something more like a hotel
-room card:
+With OS isolation and broker-only access, apps use credentials through the
+gateway. The broker token works like a hotel room card:
 
 - **The card only opens your door.** When an app wants data, it asks the front
   desk (the broker) to make the call. The desk checks that this app is allowed
@@ -48,8 +48,14 @@ The payoff is what it makes possible: installing capabilities *other people
 wrote*. The worst-case cost of trying a new app drops from "it had my keys" to
 "it had a visitor badge, briefly, for one door — and I have the logbook."
 Day to day you notice almost nothing: same tools, same answers. Hosted, the
-same design becomes a hard boundary — the sandbox makes the broker an app's
-only door to the outside world.
+design requires deployment-level OS isolation to make the broker an app's
+only route to credentials and the network. This repository starts children
+as ordinary processes; HTTP serve mode alone does not isolate them.
+
+Locally, children run under your OS user and receive `VAULT_HOME`. With the
+file backend they can read plaintext `secrets.json` directly. Broker-only
+mode, grants and tool policy govern cooperative API use; install only trusted
+local capabilities. See [SECURITY.md](SECURITY.md) for the trust boundary.
 
 ## Two ways to use it
 

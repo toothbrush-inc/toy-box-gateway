@@ -50,6 +50,8 @@ export interface AuditWriterOptions {
   keepFiles?: number;
 }
 
+import { redactErrorMessage } from "./redact.js";
+
 const AUDIT_FILE = "audit.jsonl";
 
 export class AuditWriter {
@@ -68,7 +70,15 @@ export class AuditWriter {
 
   record(entry: AuditEntry): void {
     this.rotateIfNeeded();
-    appendFileSync(this.path, `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
+    // Bound every field at the sink, including child-controlled error codes.
+    const bounded = Object.fromEntries(Object.entries(entry).map(([key, value]) => [
+      key,
+      typeof value === "string" ? (key === "error" || key === "error_code"
+        ? redactErrorMessage(value, 300) : value.slice(0, 300))
+        : Array.isArray(value) ? value.slice(0, 32).map((item) => redactErrorMessage(String(item), 80))
+        : value,
+    ]));
+    appendFileSync(this.path, `${JSON.stringify(bounded)}\n`, { encoding: "utf8", mode: 0o600 });
   }
 
   private rotateIfNeeded(): void {

@@ -7,8 +7,8 @@
         "apps/cli/dist/cli.js",
         "mcp"
       ],
-      "cwd": "/Users/dvd/code/davidd8/calsync-oss",
-      "manifestPath": "/Users/dvd/code/davidd8/calsync-oss/apps/cli/capability.json",
+      "cwd": "/path/to/calsync-oss",
+      "manifestPath": "/path/to/calsync-oss/apps/cli/capability.json",
       "secretsAccess": "broker",
       "denyTools": [
         "sync_now"
@@ -20,8 +20,8 @@
       "args": [
         "mcp/server.mjs"
       ],
-      "cwd": "/Users/dvd/code/davidd8/weather-compare",
-      "manifestPath": "/Users/dvd/code/davidd8/weather-compare/capability.json",
+      "cwd": "/path/to/weather-compare",
+      "manifestPath": "/path/to/weather-compare/capability.json",
       "secretsAccess": "broker"
     },
     {
@@ -30,12 +30,12 @@
       "args": [
         "mcp/server.mjs"
       ],
-      "cwd": "/Users/dvd/code/davidd8/fitness-tracker",
-      "manifestPath": "/Users/dvd/code/davidd8/fitness-tracker/capability.json",
+      "cwd": "/path/to/fitness-tracker",
+      "manifestPath": "/path/to/fitness-tracker/capability.json",
       "secretsAccess": "broker",
       "env": {
-        "FITNESS_DB": "/Users/dvd/code/davidd8/fitness-tracker/workouts.json",
-        "FITNESS_GAPS": "/Users/dvd/code/davidd8/fitness-tracker/gaps.json"
+        "FITNESS_DB": "/path/to/fitness-tracker/workouts.json",
+        "FITNESS_GAPS": "/path/to/fitness-tracker/gaps.json"
       }
     }
   ],
@@ -44,11 +44,11 @@
     "keepFiles": 5
   },
   "commons": {
-    "dir": "/Users/dvd/code/davidd8/fitness-tracker/data"
+    "dir": "/path/to/fitness-tracker/data"
   },
   "oauth": {
     "google": {
-      "envFile": "/Users/dvd/code/davidd8/calsync-oss/.env"
+      "envFile": "/path/to/calsync-oss/.env"
     }
   },
   "links": [

@@ -27,10 +27,20 @@ render, milliseconds, zero tokens.
 - **Provenance.** Snapshots and cards record which producer at which version
   supplied each query (`fitness@0.1.0`), and every query lands in the audit
   as a `call:` row attributed to `view-<id>` and the owner — never values.
-- **Transform sandbox.** `node:vm`, only `JSON` and `Math` in scope, 1s
-  budget, sync-only; a cooperative local boundary (hosted upgrades to
-  isolates). The bounded CardModel (stats / keyValues / list / table / text /
-  spark / bars / progress, with hard size caps) keeps cards card-sized.
+- **The owner is the sign-in.** A view's queries reach the broker as its
+  owner and get that user's profile and tokens, so over HTTP the owner is
+  the signed-in user who pinned it and the `owner` field is ignored. A
+  local stdio gateway has no sign-in and takes the field as written.
+- **Transform sandbox.** Each run uses a fresh QuickJS WebAssembly runtime
+  with no Node objects, host callbacks, filesystem or network APIs. Input and
+  output cross as JSON, capped at 1 MiB each. The heap is limited to 16 MiB,
+  the stack to 512 KiB, and execution (including queued promise jobs and JSON
+  serialization) to the configured deadline. Transforms return synchronous
+  JSON data; the CardModel schema then enforces card size and shape.
+- **Visibility and edits.** Private views and previews are readable only by
+  their owner, across HTTP, MCP tools and MCP resources. Shareable views are
+  readable by any signed-in user. Only the owner can replace or unpin a view,
+  including a shareable one. Local stdio retains access to all local views.
 - **The model says what the data means; the gateway owns the look.** A
   transform never writes markup or CSS — it emits a CardModel with the few
   words that carry meaning (a stat's signed `delta` and `tone`, a `progress`

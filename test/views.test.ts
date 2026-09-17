@@ -266,3 +266,13 @@ describe("views through the gateway", () => {
     await expect(harness.client.readResource({ uri: "view://nope" })).rejects.toThrow(/not found/);
   });
 });
+
+describe("view owner on a local gateway", () => {
+  it("requires an owner when there is no signed-in identity to stamp", async () => {
+    const harness = await startHarness();
+    const result = await callJson(harness, "pin_view", { view: { ...GOOD_VIEW, owner: undefined } });
+    expect(result["ok"]).toBe(false);
+    expect((result["error"] as { code: string; message: string }).code).toBe("invalid_view");
+    expect((result["error"] as { message: string }).message).toContain("owner");
+  });
+});

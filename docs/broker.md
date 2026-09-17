@@ -59,3 +59,16 @@ endpoint via `VAULT_EGRESS_URL` + a per-capability `VAULT_EGRESS_TOKEN`:
 This is the hosted-security seam: locally the boundary is cooperative (a
 process under your OS user could still read the vault); hosted, the same
 capability code runs in a sandbox whose only network path is the broker.
+
+### Security limits
+
+The broker never follows upstream redirects. `/fetch` and token exchanges
+have a 30-second total deadline, a 2 MiB decoded response limit, and a shared
+cap of eight in-flight upstream operations. Overflow returns 429; timeouts,
+malformed bodies and oversized responses return a controlled 502. Every
+request handler also catches unexpected storage/validation failures.
+Hosted credential access additionally requires the nonce-resolved user to
+appear in `serve.credentialUsers["provider:slot"]`. Hosted `/profile` and `/call`
+also reject missing or invalid user nonces; see [config.md](config.md).
+Forwarded MCP calls have a 60-second total budget which progress messages
+cannot extend; peer calls may use a shorter requested timeout.
