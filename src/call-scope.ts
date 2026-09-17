@@ -8,9 +8,9 @@
 
 import { randomBytes } from "node:crypto";
 
-import { identitySlug as userSlug, legacyUserSlug } from "@dvd-toy-box/vault";
+import { identitySlug as userSlug } from "@dvd-toy-box/vault";
 
-export { userSlug, legacyUserSlug };
+export { userSlug };
 
 /** The role half of a tenant-scoped slot: no underscore, so the tenant is
  * everything before the last one. */
