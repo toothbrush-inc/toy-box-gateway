@@ -6,7 +6,7 @@
   "author": "Toothbrush, Inc.",
   "type": "module",
   "bin": {
-    "capability-gateway": "./dist/cli.js"
+    "capability-gateway": "dist/cli.js"
   },
   "exports": {
     ".": {
