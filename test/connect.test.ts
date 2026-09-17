@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { openVault } from "@local/vault";
+import { openVault } from "@dvd-toy-box/vault";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CapabilityEgressInfo } from "../src/egress.js";

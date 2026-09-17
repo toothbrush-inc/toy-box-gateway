@@ -30,7 +30,7 @@ import {
   PROFILE_MAX_FILE_BYTES,
   PROFILE_MAX_VALUE_LENGTH,
   VaultError,
-} from "@local/vault";
+} from "@dvd-toy-box/vault";
 
 import { AuditWriter, type AuditEntry } from "./audit.js";
 import {

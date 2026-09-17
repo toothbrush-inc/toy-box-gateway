@@ -13,7 +13,7 @@ a grant on every call, and keeps an audit log of who used what.
 The gateway is strictly additive. Every capability that follows the
 [capability contract](https://github.com/davidd8/local-vault/blob/main/CAPABILITY.md)
 keeps working on its own with only
-[`@local/vault`](https://github.com/davidd8/local-vault); mounting it here
+[`@dvd-toy-box/vault`](https://github.com/davidd8/local-vault); mounting it here
 adds one endpoint, enforced grants, tool policy, a brokered network path, and
 the logbook.
 
