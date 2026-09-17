@@ -29,7 +29,7 @@ import {
   type ManifestData,
   type ProfileStore,
   type Vault,
-} from "@local/vault";
+} from "@dvd-toy-box/vault";
 
 import type { AuditEntry, AuditWriter } from "./audit.js";
 import { userSlug } from "./call-scope.js";

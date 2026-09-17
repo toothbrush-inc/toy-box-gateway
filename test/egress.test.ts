@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { FileProfileStore, openVault } from "@local/vault";
+import { FileProfileStore, openVault } from "@dvd-toy-box/vault";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AuditWriter, type AuditEntry } from "../src/audit.js";

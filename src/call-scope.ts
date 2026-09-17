@@ -9,7 +9,7 @@
 import { randomBytes } from "node:crypto";
 
 /** Key the nonce travels under in a forwarded call's `_meta`. Must match
- * CALL_NONCE_META_KEY in @local/vault/kit — it is the wire contract. */
+ * CALL_NONCE_META_KEY in @dvd-toy-box/vault/kit — it is the wire contract. */
 export const CALL_NONCE_META_KEY = "callNonce";
 
 /** Bounds the registry if a caller ever fails to release (it releases in a

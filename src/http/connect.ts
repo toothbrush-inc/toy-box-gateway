@@ -10,7 +10,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 
-import { connectionId, openVault, type Vault } from "@local/vault";
+import { connectionId, openVault, type Vault } from "@dvd-toy-box/vault";
 
 import { safeNext } from "./oauth/provider.js";
 

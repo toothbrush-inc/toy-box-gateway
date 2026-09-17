@@ -8,7 +8,7 @@
 // render (the same declared-query-tool check a pin passes) — the
 // authenticated call is the consent and there is nothing to revoke after.
 
-import { openVault, type GrantRecord } from "@local/vault";
+import { openVault, type GrantRecord } from "@dvd-toy-box/vault";
 
 import type { AuditWriter } from "../audit.js";
 import type { ViewsConfig } from "../config.js";

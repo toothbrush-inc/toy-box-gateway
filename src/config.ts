@@ -44,7 +44,7 @@ const WEB_PATH = z
   );
 
 /** The `store` block of a capability.json: the app's own storefront words.
- * Parsed here from the raw manifest (not through @local/vault) so a gateway
+ * Parsed here from the raw manifest (not through @dvd-toy-box/vault) so a gateway
  * built against an older vault still reads it. Same limits as the contract. */
 export const ManifestStoreSchema = z.object({
   name: z.string().min(1).max(60),

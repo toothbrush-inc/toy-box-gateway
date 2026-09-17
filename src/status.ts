@@ -7,7 +7,7 @@ import {
   openVault,
   parseCapabilityManifest,
   PROFILE_PROVIDER,
-} from "@local/vault";
+} from "@dvd-toy-box/vault";
 
 import type { ChildState, MountedCapability } from "./children.js";
 import type { CapabilitySpec, StoreCopy } from "./config.js";
