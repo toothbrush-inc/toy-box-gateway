@@ -6,7 +6,11 @@
 // The capability only ever holds the nonce — it never learns an identity and
 // so cannot name a user it was not given.
 
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
+
+import { identitySlug as userSlug, legacyUserSlug } from "@dvd-toy-box/vault";
+
+export { userSlug, legacyUserSlug };
 
 /** Key the nonce travels under in a forwarded call's `_meta`. Must match
  * CALL_NONCE_META_KEY in @dvd-toy-box/vault/kit — it is the wire contract. */
@@ -49,46 +53,4 @@ export class CallScopeRegistry {
   get size(): number {
     return this.byNonce.size;
   }
-}
-
-/**
- * Path-safe name for a user's own data. Emails use the same stable hash as
- * calsync's `tenantForIdentity` (`i` + first 32 hex chars of SHA-256 of the
- * lowercased address), so punctuation no longer collides and brokered
- * calsync tenants align with gateway profile dirs. A bare owner like the
- * `"dvd"` on existing pinned views is sanitised and passed through, so views
- * keep resolving.
- *
- * Returns null when nothing usable survives sanitising — the caller then falls
- * back to the shared profile instead of writing to a surprising path.
- */
-export function userSlug(user: string): string | null {
-  const normalized = user.trim().toLowerCase();
-  if (normalized === "") {
-    return null;
-  }
-  if (normalized.includes("@")) {
-    const digest = createHash("sha256").update(normalized, "utf8").digest("hex");
-    return `i${digest.slice(0, 32)}`;
-  }
-  const slug = normalized
-    .replace(/[^a-z0-9]+/gu, "_")
-    .replace(/^_+|_+$/gu, "")
-    .slice(0, 96);
-  return slug === "" ? null : slug;
-}
-
-/**
- * Former punctuation slug (`owner@example.com` -> `owner_at_example_com`).
- * Kept so profile lookup can find pre-hash directories during migration.
- */
-export function legacyUserSlug(user: string): string | null {
-  const slug = user
-    .trim()
-    .toLowerCase()
-    .replace(/@/gu, "_at_")
-    .replace(/[^a-z0-9]+/gu, "_")
-    .replace(/^_+|_+$/gu, "")
-    .slice(0, 96);
-  return slug === "" ? null : slug;
 }
