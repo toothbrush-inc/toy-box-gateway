@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { CallScopeRegistry, legacyUserSlug, userMayUseSlot, userSlug } from "../src/call-scope.js";
+import { CallScopeRegistry, userMayUseSlot, userSlug } from "../src/call-scope.js";
 
 describe("CallScopeRegistry", () => {
   it("mints a resolvable nonce and releases it", () => {
@@ -59,12 +59,6 @@ describe("userSlug", () => {
   it("returns null when nothing usable survives", () => {
     expect(userSlug("")).toBeNull();
     expect(userSlug("///")).toBeNull();
-  });
-
-  it("keeps the legacy punctuation slug for migration lookups", () => {
-    expect(legacyUserSlug("owner@example.com")).toBe("owner_at_example_com");
-    expect(legacyUserSlug("a.reader@example.com")).toBe("a_reader_at_example_com");
-    expect(legacyUserSlug("alice@example.com")).toBe("alice_at_example_com");
   });
 });
 
