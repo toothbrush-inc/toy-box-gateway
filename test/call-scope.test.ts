@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { CallScopeRegistry, userSlug } from "../src/call-scope.js";
+import { CallScopeRegistry, legacyUserSlug, userSlug } from "../src/call-scope.js";
 
 describe("CallScopeRegistry", () => {
   it("mints a resolvable nonce and releases it", () => {
     const scope = new CallScopeRegistry();
-    const nonce = scope.mint("dvd@thephotobase.com");
+    const nonce = scope.mint("owner@example.com");
     expect(nonce).toBeDefined();
-    expect(scope.resolve(nonce)).toBe("dvd@thephotobase.com");
+    expect(scope.resolve(nonce)).toBe("owner@example.com");
     scope.release(nonce);
     expect(scope.resolve(nonce)).toBeUndefined();
   });
@@ -36,9 +36,11 @@ describe("CallScopeRegistry", () => {
 });
 
 describe("userSlug", () => {
-  it("makes an email path-safe", () => {
-    expect(userSlug("dvd@thephotobase.com")).toBe("dvd_at_thephotobase_com");
-    expect(userSlug("a.reader@example.com")).toBe("a_reader_at_example_com");
+  it("hashes emails the same way calsync tenants do", () => {
+    expect(userSlug("owner@example.com")).toBe("ic8cd3c6427301eaf6665bccacd65ddb6");
+    expect(userSlug("Ana.B@Example.com")).toBe("i4248cc593102d6944c982776b98b8d40");
+    expect(userSlug("ana-b@example.com")).toBe("i8b5313038e8fbab2a34a2f8ae58801b3");
+    expect(userSlug("Ana.B@Example.com")).not.toBe(userSlug("ana-b@example.com"));
   });
 
   it("passes a bare view owner through, so pinned views keep resolving", () => {
@@ -46,10 +48,10 @@ describe("userSlug", () => {
   });
 
   it("normalises case and trims", () => {
-    expect(userSlug("  DVD@ThePhotobase.com ")).toBe("dvd_at_thephotobase_com");
+    expect(userSlug("  OWNER@Example.com ")).toBe("ic8cd3c6427301eaf6665bccacd65ddb6");
   });
 
-  it("never escapes its directory", () => {
+  it("never escapes its directory for bare owners", () => {
     expect(userSlug("../../etc/passwd")).toBe("etc_passwd");
     expect(userSlug("a/../b")).toBe("a_b");
   });
@@ -57,5 +59,11 @@ describe("userSlug", () => {
   it("returns null when nothing usable survives", () => {
     expect(userSlug("")).toBeNull();
     expect(userSlug("///")).toBeNull();
+  });
+
+  it("keeps the legacy punctuation slug for migration lookups", () => {
+    expect(legacyUserSlug("owner@example.com")).toBe("owner_at_example_com");
+    expect(legacyUserSlug("a.reader@example.com")).toBe("a_reader_at_example_com");
+    expect(legacyUserSlug("dvd@thephotobase.com")).toBe("dvd_at_thephotobase_com");
   });
 });

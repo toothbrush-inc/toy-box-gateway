@@ -363,7 +363,7 @@ describe("EgressServer /profile per user", () => {
 
   it("serves the caller their own profile, not the shared one", async () => {
     const { harness, usersDir } = await startWithUsers();
-    seedUser(usersDir, "dvd_at_thephotobase_com", { units: "metric" });
+    seedUser(usersDir, "i2fa71896186cba38792bb5cc0f9a491f", { units: "metric" });
     const result = await call(harness, "/profile", "tok-fitness", { fields: ["units"] }, "n-dvd");
     expect(result.status).toBe(200);
     expect(result.json["fields"]).toEqual({ units: "metric" });
@@ -372,8 +372,11 @@ describe("EgressServer /profile per user", () => {
   // The point of the whole change: two people, one process, one profile each.
   it("keeps two users' profiles apart", async () => {
     const { harness, usersDir } = await startWithUsers();
-    seedUser(usersDir, "dvd_at_thephotobase_com", { units: "metric" });
-    seedUser(usersDir, "sam_at_example_com", { units: "imperial", timezone: "Europe/Berlin" });
+    seedUser(usersDir, "i2fa71896186cba38792bb5cc0f9a491f", { units: "metric" });
+    seedUser(usersDir, "icd25a6171969f2a3c6e35c7667e3908e", {
+      units: "imperial",
+      timezone: "Europe/Berlin",
+    });
     const [dvd, sam] = await Promise.all([
       call(harness, "/profile", "tok-fitness", { fields: ["units", "timezone"] }, "n-dvd"),
       call(harness, "/profile", "tok-fitness", { fields: ["units", "timezone"] }, "n-sam"),
@@ -384,7 +387,7 @@ describe("EgressServer /profile per user", () => {
 
   it("falls back to the shared profile without a nonce, and for an unknown one", async () => {
     const { harness, usersDir } = await startWithUsers();
-    seedUser(usersDir, "dvd_at_thephotobase_com", { units: "metric" });
+    seedUser(usersDir, "i2fa71896186cba38792bb5cc0f9a491f", { units: "metric" });
     const bare = await call(harness, "/profile", "tok-fitness", { fields: ["units"] });
     const stale = await call(harness, "/profile", "tok-fitness", { fields: ["units"] }, "n-expired");
     expect(bare.json["fields"]).toEqual({ units: "imperial" });
@@ -398,9 +401,17 @@ describe("EgressServer /profile per user", () => {
     expect(result.json["fields"]).toEqual({ units: "metric" });
   });
 
+  it("still reads a pre-hash profile directory during migration", async () => {
+    const { harness, usersDir } = await startWithUsers();
+    seedUser(usersDir, "dvd_at_thephotobase_com", { units: "metric" });
+    const result = await call(harness, "/profile", "tok-fitness", { fields: ["units"] }, "n-dvd");
+    expect(result.status).toBe(200);
+    expect(result.json["fields"]).toEqual({ units: "metric" });
+  });
+
   it("attributes the broker row to the caller, still without values", async () => {
     const { harness, usersDir } = await startWithUsers();
-    seedUser(usersDir, "sam_at_example_com", { units: "metric" });
+    seedUser(usersDir, "icd25a6171969f2a3c6e35c7667e3908e", { units: "metric" });
     await call(harness, "/profile", "tok-fitness", { fields: ["units"] }, "n-sam");
     expect(lastAudit(harness)).toMatchObject({
       capability: "fitness",
