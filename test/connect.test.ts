@@ -206,3 +206,11 @@ describe("GoogleConnectFlow", () => {
     }
   });
 });
+
+it("binds connect state to the signed-in user", async () => {
+  const { flow, upstream } = makeFlow({});
+  const started = flow.start("personal", "/", "alice");
+  if (!started.ok) throw new Error(started.message);
+  expect((await flow.handleCallback({ state: stateOf(started.redirectTo), code: "ok" }, "bob")).ok).toBe(false);
+  expect(upstream).not.toHaveBeenCalled();
+});

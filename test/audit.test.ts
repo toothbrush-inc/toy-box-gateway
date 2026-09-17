@@ -62,3 +62,11 @@ describe("AuditWriter", () => {
     expect(rotated.length).toBe(1);
   });
 });
+
+it("bounds untrusted audit fields and redacts child error codes", () => {
+  const writer = new AuditWriter({ dir: auditDir() });
+  writer.record(entry({ tool: "x".repeat(1_000_000), error_code: "sk_live_LEAKME1234567890", fields: Array(1000).fill("y".repeat(1000)) as string[] }));
+  const raw = readFileSync(writer.path, "utf8");
+  expect(raw.length).toBeLessThan(4000);
+  expect(raw).not.toContain("LEAKME");
+});

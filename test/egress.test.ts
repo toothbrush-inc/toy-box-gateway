@@ -109,6 +109,10 @@ async function startBroker(
     versionOf?: (capabilityId: string) => string | null;
     resolveCall?: (nonce: string | undefined) => string | undefined;
     usersDir?: string;
+    credentialUsers?: Record<string, string[]>;
+    fetchTimeoutMs?: number;
+    maxResponseBytes?: number;
+    maxConcurrentFetches?: number;
   } = {},
 ): Promise<Harness> {
   const dir = tempDir();
@@ -142,6 +146,7 @@ async function startBroker(
     ...(options.versionOf === undefined ? {} : { versionOf: options.versionOf }),
     ...(options.resolveCall === undefined ? {} : { resolveCall: options.resolveCall }),
     ...(options.usersDir === undefined ? {} : { usersDir: options.usersDir }),
+    ...options,
     fetchImpl: upstream as unknown as typeof fetch,
   });
   servers.push(server);
@@ -865,4 +870,108 @@ describe("egress helpers", () => {
     expect(a).toMatch(/^[0-9a-f]{64}$/);
     expect(newEgressToken()).not.toBe(a);
   });
+});
+
+describe("EgressServer /fetch hardening", () => {
+  it("answers a redirect instead of following it, so the key never leaves the allowlist", async () => {
+    const harness = await startBroker({
+      upstream: () =>
+        new Response("", { status: 302, headers: { Location: "https://collector.evil.example/" } }),
+    });
+    await seedPurpleair(harness);
+    const result = await call(harness, "/fetch", "tok-weather", {
+      provider: "purpleair",
+      url: "https://api.purpleair.com/v1/sensors/1",
+    });
+    expect(result.status).toBe(200);
+    expect(result.json["status"]).toBe(302);
+    // one request, with the fetch told not to follow
+    expect(harness.upstream).toHaveBeenCalledTimes(1);
+    const [, init] = harness.upstream.mock.calls[0] as [string, RequestInit];
+    expect(init.redirect).toBe("manual");
+  });
+
+  it("survives an upstream body that cannot be read, and keeps serving", async () => {
+    const harness = await startBroker({
+      upstream: () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error("terminated"));
+            },
+          }),
+          { status: 200 },
+        ),
+    });
+    await seedPurpleair(harness);
+    const broken = await call(harness, "/fetch", "tok-weather", {
+      provider: "purpleair",
+      url: "https://api.purpleair.com/v1/sensors/1",
+    });
+    expect(broken.status).toBe(502);
+    expect(errorCode(broken.json)).toBe("upstream_unreachable");
+    expect(lastAudit(harness)).toMatchObject({ outcome: "error", error_code: "upstream_unreachable" });
+
+    harness.upstream.mockImplementation(() => new Response("fine", { status: 200 }));
+    const next = await call(harness, "/fetch", "tok-weather", {
+      provider: "purpleair",
+      url: "https://api.purpleair.com/v1/sensors/1",
+    });
+    expect(next.status).toBe(200);
+    expect(next.json["body"]).toBe("fine");
+  });
+});
+
+describe("hosted credential ownership and upstream budgets", () => {
+  it("checks the nonce user before serving any slot, including cached tokens", async () => {
+    const harness = await startBroker({
+      oauth: { google: { clientId: "id", clientSecret: "secret" } },
+      credentialUsers: { "purpleair:default": ["alice"], "google:personal": ["alice"] },
+      resolveCall: (nonce) => nonce === "a" ? "alice" : nonce === "b" ? "bob" : undefined,
+      upstream: () => new Response(JSON.stringify({ access_token: "ya29.allowed", expires_in: 3600 })),
+    });
+    await harness.seedVault.putSecret({ provider: "purpleair", slot: "default", kind: "apikey", secret: "key" });
+    harness.seedVault.putGrant({ capability: "weather", connectionId: "purpleair:default", actions: ["read"] });
+    await harness.seedVault.putSecret({ provider: "google", slot: "personal", kind: "oauth", secret: "refresh" });
+    harness.seedVault.putGrant({ capability: "calsync", connectionId: "google:personal" });
+    for (const [path, token, body] of [
+      ["/fetch", "tok-weather", { provider: "purpleair", url: "https://api.purpleair.com/v1" }],
+      ["/token", "tok-calsync", { provider: "google", slot: "personal" }],
+    ] as const) {
+      expect((await call(harness, path, token, body, "a")).status).toBe(200);
+      for (const nonce of ["b", "forged", undefined]) {
+        const refused = await call(harness, path, token, body, nonce);
+        expect(refused.status).toBe(403);
+        expect(errorCode(refused.json)).toBe("credential_denied");
+      }
+    }
+    expect(harness.upstream).toHaveBeenCalledTimes(2);
+  });
+
+  it("caps body bytes, concurrent requests and the total upstream duration", async () => {
+    let signal: AbortSignal | null | undefined;
+    const harness = await startBroker({
+      maxResponseBytes: 8, fetchTimeoutMs: 80, maxConcurrentFetches: 1,
+      upstream: (_url, init) => { signal = init?.signal; return new Promise<Response>(() => undefined); },
+    });
+    harness.seedVault.putGrant({ capability: "weather", connectionId: "purpleair:default", actions: ["read"] });
+    const body = { provider: "purpleair", url: "https://api.purpleair.com/v1" };
+    const pending = call(harness, "/fetch", "tok-weather", body);
+    await vi.waitFor(() => expect(harness.upstream).toHaveBeenCalledOnce());
+    expect((await call(harness, "/fetch", "tok-weather", body)).status).toBe(429);
+    expect((await pending).status).toBe(502);
+    expect(signal?.aborted).toBe(true);
+    harness.upstream.mockImplementation(() => new Response("0123456789"));
+    expect((await call(harness, "/fetch", "tok-weather", body)).status).toBe(502);
+    harness.upstream.mockImplementation(() => new Response("ok"));
+    expect((await call(harness, "/fetch", "tok-weather", body)).status).toBe(200);
+  });
+});
+
+it("does not fall back to the operator profile on an unscoped hosted request", async () => {
+  const harness = await startBroker({ credentialUsers: {} });
+  harness.seedVault.putGrant({ capability: "fitness", connectionId: "profile:default", actions: ["units"] });
+  const response = await call(harness, "/profile", "tok-fitness", { fields: ["units"] });
+  expect(response.status).toBe(403);
+  expect(errorCode(response.json)).toBe("call_scope_required");
 });

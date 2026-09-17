@@ -44,3 +44,33 @@ describe("buildChildEnv", () => {
     expect(env["BOOKS_GAPS"]).toBe("/data/books/gaps.json");
   });
 });
+
+it("closes an initialized child when tools/list fails, including after reconnect", async () => {
+  const { ChildManager } = await import("../src/children.js");
+  const { Server } = await import("@modelcontextprotocol/sdk/server/index.js");
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const { ListToolsRequestSchema } = await import("@modelcontextprotocol/sdk/types.js");
+  const { vi } = await import("vitest");
+  const transports = await Promise.all(Array.from({ length: 2 }, async () => {
+    const server = new Server({ name: "broken", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, () => { throw new Error("list failed"); });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    return { clientSide, close: vi.spyOn(clientSide, "close"), server };
+  }));
+  let index = 0;
+  const manager = new ChildManager([{ id: "broken", command: "unused", args: [] }], {
+    transportFactory: () => transports[index++]!.clientSide,
+    onToolsChanged: () => undefined, log: () => undefined,
+  });
+  try {
+    await manager.start();
+    expect(manager.get("broken")?.state).toBe("failed");
+    expect(transports[0]!.close).toHaveBeenCalled();
+    await manager.reconnect("broken");
+    expect(transports[1]!.close).toHaveBeenCalled();
+  } finally {
+    await manager.close();
+    await Promise.all(transports.map(({ server }) => server.close()));
+  }
+});

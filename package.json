@@ -19,6 +19,7 @@
     "dist",
     "src",
     "README.md",
+    "SECURITY.md",
     "gateway.config.example.json"
   ],
   "engines": {
@@ -37,6 +38,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
+    "quickjs-emscripten": "^0.32.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -44,7 +46,7 @@
     "@types/express": "^5.0.0",
     "@types/node": "^24.13.3",
     "typescript": "5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.11"
   },
   "repository": {
     "type": "git",

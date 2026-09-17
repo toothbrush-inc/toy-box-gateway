@@ -24,7 +24,11 @@ const VIEW_INPUT_SCHEMA = {
     id: { type: "string", description: "Stable token id (lowercase)" },
     title: { type: "string" },
     description: { type: "string" },
-    owner: { type: "string", description: "Who pinned it (audit attribution)" },
+    owner: {
+      type: "string",
+      description:
+        "Who the view reads as (audit attribution). Over HTTP the signed-in user is used and this is ignored; a local stdio gateway requires it",
+    },
     sensitivity: { type: "string", enum: ["private", "shareable"] },
     queries: { type: "array", items: QUERY_SCHEMA, minItems: 1, maxItems: 8 },
     transform: {
@@ -42,7 +46,7 @@ const VIEW_INPUT_SCHEMA = {
       required: ["intervalMs"],
     },
   },
-  required: ["id", "title", "owner", "sensitivity", "queries", "transform", "refresh"],
+  required: ["id", "title", "sensitivity", "queries", "transform", "refresh"],
 } as const;
 
 const CARD_MODEL_GRAMMAR =

@@ -149,8 +149,10 @@ export class ChildManager {
       connectedAt: null,
     };
     this.children.set(spec.id, mounted);
+    let client: Client | undefined;
+    let transport: Transport | undefined;
     try {
-      const client = new Client(
+      client = new Client(
         { name: "capability-gateway", version: this.options.version ?? "0.0.0" },
         {
           listChanged: {
@@ -178,7 +180,7 @@ export class ChildManager {
             this.options.egressFor?.(forSpec.id),
             this.options.extraEnvFor?.(forSpec.id),
           ));
-      const transport = factory(spec);
+      transport = factory(spec);
       this.attachStderr(spec.id, transport);
       client.onclose = () => {
         if (mounted.state === "connected") {
@@ -199,6 +201,8 @@ export class ChildManager {
       mounted.lastError = null;
       return mounted;
     } catch (error) {
+      await client?.close().catch(() => undefined);
+      await transport?.close().catch(() => undefined);
       mounted.state = "failed";
       mounted.lastError = redactErrorMessage(
         error instanceof Error ? error.message : String(error),

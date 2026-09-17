@@ -33,6 +33,7 @@ import type { OAuthDiskStore } from "./store.js";
 
 const PENDING_TTL_MS = 10 * 60 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
+const CONSENT_TTL_MS = 10 * 60 * 1000;
 /** Anyone can start a login, so the pending map is bounded: past this many
  * in-flight attempts the oldest is dropped (its user starts over). */
 const MAX_PENDING = 5000;
@@ -46,6 +47,9 @@ const MAX_PENDING = 5000;
  * cal.<host> sends people here to sign in and wants them back.
  */
 export function safeNext(next: string, publicHost: string): string | undefined {
+  if (/[\u0000-\u0020\u007f\\]/u.test(next)) {
+    return undefined;
+  }
   if (/^\/(?![/\\])/u.test(next)) {
     return next;
   }
@@ -87,6 +91,23 @@ interface CodeRecord {
   expiresAt: number;
 }
 
+/** An MCP authorization that Google has confirmed and the person has not
+ * yet answered: everything needed to mint the code once they allow it. */
+interface ConsentRecord extends CodeRecord {
+  state?: string;
+}
+
+/** What the consent page shows: who is asking, as whom, and where the
+ * code will be sent. */
+export interface ConsentPrompt {
+  token: string;
+  clientId: string;
+  clientName?: string;
+  redirectUri: string;
+  email: string;
+  scopes: string[];
+}
+
 export interface GatewayOAuthProviderOptions {
   issuerUrl: string;
   store: OAuthDiskStore;
@@ -102,15 +123,20 @@ export interface GatewayOAuthProviderOptions {
   log: (line: string) => void;
 }
 
-export interface GoogleCallbackResult {
-  redirectTo: string;
-  /** Present for browser logins: the session cookie value to set. */
-  sessionCookie?: string;
-}
+export type GoogleCallbackResult =
+  | {
+      kind: "redirect";
+      redirectTo: string;
+      /** Present for browser logins: the session cookie value to set. */
+      sessionCookie?: string;
+    }
+  /** An MCP client is asking: show the person the consent page. */
+  | { kind: "consent"; consent: ConsentPrompt };
 
 export class GatewayOAuthProvider implements OAuthServerProvider {
   private readonly pending = new Map<string, Pending>();
   private readonly codes = new Map<string, CodeRecord>();
+  private readonly consents = new Map<string, ConsentRecord>();
   private readonly issuer: string;
   private readonly endpoints: GoogleEndpoints;
   private readonly allowed: Set<string>;
@@ -205,7 +231,7 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
 
     if (query.error !== undefined || query.code === undefined) {
       if (entry.kind === "mcp") {
-        return { redirectTo: clientRedirect({ error: "access_denied" }) };
+        return { kind: "redirect", redirectTo: clientRedirect({ error: "access_denied" }) };
       }
       throw new Error("google login was cancelled");
     }
@@ -221,6 +247,7 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
       this.options.log(`[gateway] oauth login rejected for ${identity.email} (not on allowedEmails)`);
       if (entry.kind === "mcp") {
         return {
+          kind: "redirect",
           redirectTo: clientRedirect({
             error: "access_denied",
             error_description: "this account is not allowed on this gateway",
@@ -237,20 +264,70 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
         sub: identity.email,
         expiresInSec: this.options.sessionTtlSec ?? 7 * 86_400,
       });
-      return { redirectTo: entry.next, sessionCookie: cookie };
+      return { kind: "redirect", redirectTo: entry.next, sessionCookie: cookie };
     }
 
-    const code = randomBytes(24).toString("hex");
-    this.codes.set(code, {
+    // Google confirmed who is here. Before a code goes anywhere the person
+    // sees which client asked and where the code will be sent: registration
+    // is open, so without this step any redirect_uri could collect a code
+    // for whoever clicked a link — one account picker, no questions asked.
+    if (this.consents.size >= MAX_PENDING) throw new Error("too many pending consents; try again later");
+    const token = randomBytes(24).toString("hex");
+    this.consents.set(token, {
       clientId: entry.clientId,
       redirectUri: entry.redirectUri,
       codeChallenge: entry.codeChallenge,
       scopes: entry.scopes,
       email: identity.email,
-      expiresAt: Date.now() + CODE_TTL_MS,
+      expiresAt: Date.now() + CONSENT_TTL_MS,
+      ...(entry.state === undefined ? {} : { state: entry.state }),
       ...(entry.resource === undefined ? {} : { resource: entry.resource }),
     });
-    return { redirectTo: clientRedirect({ code }) };
+    const client = this.options.store.getClient(entry.clientId);
+    return {
+      kind: "consent",
+      consent: {
+        token,
+        clientId: entry.clientId,
+        ...(client?.client_name === undefined ? {} : { clientName: client.client_name }),
+        redirectUri: entry.redirectUri,
+        email: identity.email,
+        scopes: entry.scopes,
+      },
+    };
+  }
+
+  /** The person's answer to the consent page. Allow mints the code the
+   * client is waiting for; deny sends it `access_denied`. The token is
+   * single use either way. */
+  completeConsent(token: string | undefined, decision: "allow" | "deny"): { redirectTo: string } {
+    this.prune();
+    const record = token === undefined ? undefined : this.consents.get(token);
+    if (record === undefined || record.expiresAt < Date.now()) {
+      throw new Error("this sign-in has expired; start over from your client");
+    }
+    this.consents.delete(token ?? "");
+    const url = new URL(record.redirectUri);
+    if (record.state !== undefined) {
+      url.searchParams.set("state", record.state);
+    }
+    if (decision !== "allow") {
+      url.searchParams.set("error", "access_denied");
+      return { redirectTo: url.toString() };
+    }
+    if (this.codes.size >= MAX_PENDING) throw new Error("too many pending authorizations; try again later");
+    const code = randomBytes(24).toString("hex");
+    this.codes.set(code, {
+      clientId: record.clientId,
+      redirectUri: record.redirectUri,
+      codeChallenge: record.codeChallenge,
+      scopes: record.scopes,
+      email: record.email,
+      expiresAt: Date.now() + CODE_TTL_MS,
+      ...(record.resource === undefined ? {} : { resource: record.resource }),
+    });
+    url.searchParams.set("code", code);
+    return { redirectTo: url.toString() };
   }
 
   challengeForAuthorizationCode(
@@ -291,6 +368,10 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
     if (record === undefined || record.clientId !== client.client_id || record.expiresAt <= now) {
       throw new InvalidGrantError("refresh token is unknown or expired");
     }
+    if (!this.allowed.has(record.email)) {
+      store.revokeFamily(record.family);
+      throw new InvalidGrantError("account is no longer allowed");
+    }
     if (record.revoked === true) {
       throw new InvalidGrantError("refresh token was revoked");
     }
@@ -309,7 +390,7 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
 
   verifyAccessToken(token: string): Promise<AuthInfo> {
     const payload = verifyJwt(this.options.signingKey, token, { iss: this.issuer, aud: "mcp" });
-    if (payload === null) {
+    if (payload === null || !this.allowed.has(payload.sub)) {
       throw new InvalidTokenError("access token is invalid or expired");
     }
     const scope = typeof payload["scope"] === "string" ? payload["scope"] : "";
@@ -336,10 +417,18 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
       return null;
     }
     const payload = verifyJwt(this.options.signingKey, value, { iss: this.issuer, aud: "session" });
-    return payload === null ? null : payload.sub;
+    return payload === null || !this.allowed.has(payload.sub) ||
+      this.options.store.isSessionRevoked(payload.jti) ? null : payload.sub;
+  }
+
+  revokeSessionCookie(value: string | undefined): void {
+    if (value === undefined) return;
+    const payload = verifyJwt(this.options.signingKey, value, { iss: this.issuer, aud: "session" });
+    if (payload !== null) this.options.store.revokeSession(payload.jti, payload.exp);
   }
 
   private issueTokens(clientId: string, email: string, scopes: string[], family: string): OAuthTokens {
+    if (!this.allowed.has(email)) throw new InvalidGrantError("account is no longer allowed");
     const accessTtl = this.options.accessTokenTtlSec;
     const accessToken = signJwt(this.options.signingKey, {
       iss: this.issuer,
@@ -376,6 +465,11 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
     for (const [key, record] of this.codes) {
       if (record.expiresAt < now) {
         this.codes.delete(key);
+      }
+    }
+    for (const [key, record] of this.consents) {
+      if (record.expiresAt < now) {
+        this.consents.delete(key);
       }
     }
   }

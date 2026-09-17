@@ -48,6 +48,7 @@ export { signJwt, verifyJwt, type JwtPayload } from "./http/oauth/jwt.js";
 export {
   GatewayOAuthProvider,
   SESSION_COOKIE,
+  type ConsentPrompt,
   type GatewayOAuthProviderOptions,
   type GoogleCallbackResult,
 } from "./http/oauth/provider.js";
@@ -87,6 +88,7 @@ export { PreviewStore, type PreviewStoreOptions, type ViewPreview } from "./view
 export {
   renderCardHtml,
   renderCardJson,
+  renderConsentHtml,
   renderNoticeHtml,
   renderPreviewHtml,
   renderPreviewJson,

@@ -38,7 +38,7 @@ describe("CallScopeRegistry", () => {
 describe("userSlug", () => {
   it("makes an email path-safe", () => {
     expect(userSlug("dvd@thephotobase.com")).toBe("dvd_at_thephotobase_com");
-    expect(userSlug("d.dryjanski@gmail.com")).toBe("d_dryjanski_at_gmail_com");
+    expect(userSlug("a.reader@example.com")).toBe("a_reader_at_example_com");
   });
 
   it("passes a bare view owner through, so pinned views keep resolving", () => {

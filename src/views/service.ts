@@ -60,8 +60,11 @@ export type PreviewResult =
   | { ok: true; preview: ViewPreview }
   | { ok: false; code: string; message: string };
 
+/** A parsed spec with its owner settled (see `compile`). */
+type CompiledSpec = Omit<ViewSpecInput, "owner"> & { owner: string };
+
 type CompileResult =
-  | { ok: true; spec: ViewSpecInput; toolsByProducer: Map<string, Set<string>> }
+  | { ok: true; spec: CompiledSpec; toolsByProducer: Map<string, Set<string>> }
   | { ok: false; code: string; message: string };
 
 type ExecutionMode =
@@ -90,6 +93,7 @@ export class ViewsService {
   private readonly store: ViewStore;
   private readonly previews: PreviewStore;
   private readonly scheduler: ViewScheduler;
+  private readonly pinning = new Set<string>();
   private readonly inflight = new Map<string, Promise<ViewSnapshot>>();
   private readonly publicUrl: string | undefined;
 
@@ -110,12 +114,17 @@ export class ViewsService {
     }
   }
 
-  list(): ViewSpec[] {
-    return this.store.list();
+  list(actor?: string): ViewSpec[] {
+    return this.store.list().filter((spec) => this.canRead(spec, actor));
   }
 
-  get(id: string): ViewSpec | undefined {
-    return this.store.get(id);
+  canRead(spec: ViewSpec, actor?: string): boolean {
+    return actor === undefined || spec.owner === actor || spec.sensitivity === "shareable";
+  }
+
+  get(id: string, actor?: string): ViewSpec | undefined {
+    const spec = this.store.get(id);
+    return spec !== undefined && this.canRead(spec, actor) ? spec : undefined;
   }
 
   getSnapshot(id: string): ViewSnapshot | undefined {
@@ -132,13 +141,26 @@ export class ViewsService {
     return this.publicUrl === undefined ? undefined : `${this.publicUrl}${previewPath(token)}`;
   }
 
-  async pin(input: unknown): Promise<PinResult> {
-    const compiled = this.compile(input);
+  /** `actor` is the signed-in caller when there is one; it becomes the
+   * view's owner regardless of what the input says. */
+  async pin(input: unknown, actor?: string): Promise<PinResult> {
+    const compiled = this.compile(input, actor);
     if (!compiled.ok) {
       return compiled;
     }
+    const { spec } = compiled;
+    if (this.pinning.has(spec.id)) return { ok: false, code: "view_busy", message: "view is being updated; retry" };
+    this.pinning.add(spec.id);
+    try { return await this.pinCompiled(compiled, actor); }
+    finally { this.pinning.delete(spec.id); }
+  }
+
+  private async pinCompiled(compiled: Extract<CompileResult, { ok: true }>, actor?: string): Promise<PinResult> {
     const { spec, toolsByProducer } = compiled;
     const existing = this.store.get(spec.id);
+    if (existing !== undefined && actor !== undefined && existing.owner !== actor) {
+      return { ok: false, code: "view_forbidden", message: "only the owner may replace this view" };
+    }
     if (existing === undefined && this.store.list().length >= this.options.config.maxViews) {
       return {
         ok: false,
@@ -199,8 +221,8 @@ export class ViewsService {
 
   /** Compile + run once, persist nothing: the result lives at a token for
    * `previewTtlMs`. The same input pins unchanged. */
-  async preview(input: unknown): Promise<PreviewResult> {
-    const compiled = this.compile(input);
+  async preview(input: unknown, actor?: string): Promise<PreviewResult> {
+    const compiled = this.compile(input, actor);
     if (!compiled.ok) {
       return compiled;
     }
@@ -210,11 +232,14 @@ export class ViewsService {
   }
 
   /** A live preview by token (undefined once expired or never issued). */
-  getPreview(token: string): ViewPreview | undefined {
-    return this.previews.get(token);
+  getPreview(token: string, actor?: string): ViewPreview | undefined {
+    const preview = this.previews.get(token);
+    return preview !== undefined && this.canRead(preview.spec, actor) ? preview : undefined;
   }
 
-  unpin(id: string): boolean {
+  unpin(id: string, actor?: string): boolean {
+    const spec = this.store.get(id);
+    if (this.pinning.has(id) || (actor !== undefined && spec?.owner !== actor)) return false;
     this.scheduler.stop(id);
     const existed = this.store.delete(id);
     if (existed) {
@@ -269,8 +294,8 @@ export class ViewsService {
     return this.run(id, { force: true });
   }
 
-  listResources(): ViewResource[] {
-    return this.store.list().map((spec) => {
+  listResources(actor?: string): ViewResource[] {
+    return this.list(actor).map((spec) => {
       const snapshot = this.store.getSnapshot(spec.id);
       return {
         uri: viewUri(spec.id),
@@ -288,8 +313,9 @@ export class ViewsService {
 
   async readResource(
     uri: string,
+    actor?: string,
   ): Promise<{ uri: string; mimeType: "application/json"; text: string } | undefined> {
-    const spec = this.store.list().find((candidate) => viewUri(candidate.id) === uri);
+    const spec = this.list(actor).find((candidate) => viewUri(candidate.id) === uri);
     if (spec === undefined) {
       return undefined;
     }
@@ -312,7 +338,7 @@ export class ViewsService {
   /** Parse the input and prove every bound tool is a configured producer's
    * declared QUERY tool — a glance must never fire a mutation. Shared by pin
    * and preview so a preview that passes is a pin that passes. */
-  private compile(input: unknown): CompileResult {
+  private compile(input: unknown, actor?: string): CompileResult {
     const parsed = ViewSpecInputSchema.safeParse(input);
     if (!parsed.success) {
       const issues = parsed.error.issues
@@ -321,7 +347,20 @@ export class ViewsService {
         .join("; ");
       return { ok: false, code: "invalid_view", message: issues };
     }
-    const spec = parsed.data;
+    // The owner is who the view reads as: its queries reach the broker
+    // under this identity and get that user's profile and tokens. So it is
+    // never taken from the client when a signed-in caller is known — a view
+    // author could otherwise name any other user. A local stdio gateway has
+    // no sign-in and takes the field as written.
+    const owner = actor ?? parsed.data.owner;
+    if (owner === undefined) {
+      return {
+        ok: false,
+        code: "invalid_view",
+        message: "owner: required when the gateway has no signed-in identity",
+      };
+    }
+    const spec: CompiledSpec = { ...parsed.data, owner };
     const toolsByProducer = new Map<string, Set<string>>();
     for (const query of spec.queries) {
       const name = parsePrefixedName(query.tool);
@@ -353,7 +392,7 @@ export class ViewsService {
     return { ok: true, spec, toolsByProducer };
   }
 
-  private stamp(spec: ViewSpecInput, existing: ViewSpec | undefined): ViewSpec {
+  private stamp(spec: CompiledSpec, existing: ViewSpec | undefined): ViewSpec {
     const now = new Date().toISOString();
     return { ...spec, createdAt: existing?.createdAt ?? now, updatedAt: now };
   }

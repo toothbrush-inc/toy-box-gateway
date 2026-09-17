@@ -205,6 +205,11 @@ export interface PeerToolResult {
 
 export interface EgressServerOptions {
   tokens: Map<string, string>;
+  /** Present in hosted mode: provider:slot -> users allowed to use it. */
+  credentialUsers?: Readonly<Record<string, readonly string[]>>;
+  fetchTimeoutMs?: number;
+  maxResponseBytes?: number;
+  maxConcurrentFetches?: number;
   specs: Map<string, CapabilityEgressInfo>;
   env: NodeJS.ProcessEnv;
   audit: AuditWriter;
@@ -246,6 +251,7 @@ export class EgressServer {
   private readonly vault: Vault;
   private readonly fetchImpl: typeof fetch;
   private readonly googleTokenUrl: string;
+  private activeFetches = 0;
   private readonly tokenCache = new Map<string, CachedToken>();
   private readonly inflightCalls = new Map<string, number>();
   private readonly userProfiles = new Map<string, ProfileStore>();
@@ -259,7 +265,21 @@ export class EgressServer {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.googleTokenUrl = options.googleTokenUrl ?? DEFAULT_GOOGLE_TOKEN_URL;
     this.server = createServer((request, response) => {
-      void this.handle(request, response);
+      // Nothing a child sends may take the process down: a handler that
+      // throws (a malformed upstream body, a corrupt grant file, a slot name
+      // the vault refuses) answers 500 and the broker carries on.
+      this.handle(request, response).catch((error: unknown) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.options.log(`[gateway] egress request failed: ${redactErrorMessage(reason)}`);
+        if (!response.headersSent) {
+          reply(response, 500, {
+            ok: false,
+            error: { code: "egress_internal", message: "the broker could not complete the request" },
+          });
+        } else {
+          response.destroy();
+        }
+      });
     });
   }
 
@@ -268,7 +288,13 @@ export class EgressServer {
   }
 
   async listen(): Promise<string> {
-    await new Promise<void>((resolve) => this.server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve, reject) => {
+      this.server.once("error", reject);
+      this.server.listen(0, "127.0.0.1", () => {
+        this.server.off("error", reject);
+        resolve();
+      });
+    });
     const address = this.server.address();
     if (address === null || typeof address === "string") {
       throw new Error("egress server failed to bind");
@@ -311,16 +337,31 @@ export class EgressServer {
     const raw = request.headers["x-vault-call"];
     const nonce = typeof raw === "string" ? raw : undefined;
     const user = this.options.resolveCall?.(nonce);
-    if (route === "POST /fetch") {
-      await this.handleFetch(capability, body, response, user);
-    } else if (route === "POST /token") {
-      await this.handleToken(capability, body, response, user);
-    } else if (route === "POST /profile") {
-      await this.handleProfile(capability, body, response, user);
-    } else if (route === "POST /call") {
-      await this.handleCall(capability, body, response, user);
-    } else {
-      this.handleCommons(capability, body, response, user);
+    if (this.options.credentialUsers !== undefined && user === undefined &&
+        (route === "POST /profile" || route === "POST /call")) {
+      reply(response, 403, { ok: false, error: { code: "call_scope_required", message: "hosted reads require a valid user call nonce" } });
+      return;
+    }
+    const upstreamRoute = route === "POST /fetch" || route === "POST /token";
+    if (upstreamRoute && this.activeFetches >= (this.options.maxConcurrentFetches ?? 8)) {
+      reply(response, 429, { ok: false, error: { code: "egress_busy", message: "too many upstream requests; retry" } });
+      return;
+    }
+    if (upstreamRoute) this.activeFetches += 1;
+    try {
+      if (route === "POST /fetch") {
+        await this.handleFetch(capability, body, response, user);
+      } else if (route === "POST /token") {
+        await this.handleToken(capability, body, response, user);
+      } else if (route === "POST /profile") {
+        await this.handleProfile(capability, body, response, user);
+      } else if (route === "POST /call") {
+        await this.handleCall(capability, body, response, user);
+      } else {
+        this.handleCommons(capability, body, response, user);
+      }
+    } finally {
+      if (upstreamRoute) this.activeFetches -= 1;
     }
   }
 
@@ -363,6 +404,43 @@ export class EgressServer {
       }
     }
     return null;
+  }
+
+  private async fetchBounded(url: string, init: RequestInit): Promise<{ response: Response; body: string }> {
+    const controller = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    const limit = this.options.maxResponseBytes ?? 2 * 1024 * 1024;
+    const operation = async (): Promise<{ response: Response; body: string }> => {
+      const response = await this.fetchImpl(url, { ...init, redirect: "manual", signal: controller.signal });
+      if (controller.signal.aborted) { void response.body?.cancel(); throw new Error("upstream timeout"); }
+      const reader = response.body?.getReader();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      if (reader !== undefined) {
+        try {
+          while (true) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            size += chunk.value.byteLength;
+            if (size > limit) {
+              controller.abort();
+              void reader.cancel().catch(() => undefined);
+              throw new Error("upstream response exceeds byte limit");
+            }
+            chunks.push(chunk.value);
+          }
+        } finally { reader.releaseLock(); }
+      }
+      return { response, body: Buffer.concat(chunks).toString("utf8") };
+    };
+    try {
+      return await Promise.race([
+        operation(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => { controller.abort(); reject(new Error("upstream timeout")); }, this.options.fetchTimeoutMs ?? 30_000);
+        }),
+      ]);
+    } finally { clearTimeout(timer); }
   }
 
   private async handleFetch(
@@ -425,6 +503,11 @@ export class EgressServer {
       });
       return;
     }
+    if (this.options.credentialUsers !== undefined &&
+        (user === undefined || !this.options.credentialUsers[`${provider}:${slot}`]?.includes(user))) {
+      deny({ status: 403, code: "credential_denied", message: "this caller may not use that connection" });
+      return;
+    }
     const connection = connectionId(provider, slot);
     if (!this.vault.checkGrant({ capability, connectionId: connection, action: "read" })) {
       deny({
@@ -476,18 +559,30 @@ export class EgressServer {
     }
 
     let upstream: Response;
+    let text: string;
     try {
-      upstream = await this.fetchImpl(url.toString(), { headers, cache: "no-store" });
+      // A redirect is answered, never followed: undici keeps custom headers
+      // (the attached key) across a cross-origin hop, so an allowlisted host
+      // that 302s elsewhere would hand the credential to wherever it pointed.
+      // The child sees the 3xx and may re-request an allowlisted target.
+      const fetched = await this.fetchBounded(url.toString(), {
+        headers,
+        cache: "no-store",
+        redirect: "manual",
+      });
+      // Reading the body can reject too (bad content-encoding, a connection
+      // cut mid-stream); it belongs inside the same guard.
+      upstream = fetched.response;
+      text = fetched.body;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       deny({
         status: 502,
         code: "upstream_unreachable",
-        message: `upstream request failed: ${redactErrorMessage(reason)}`,
+        message: `upstream request failed: ${redactErrorMessage(secret === null ? reason : reason.replaceAll(secret, "[redacted]"))}`,
       });
       return;
     }
-    let text = await upstream.text();
     if (secret !== null) {
       text = text.replaceAll(secret, "[redacted]");
     }
@@ -549,6 +644,11 @@ export class EgressServer {
       });
       return;
     }
+    if (this.options.credentialUsers !== undefined &&
+        (user === undefined || !this.options.credentialUsers[`${provider}:${slot}`]?.includes(user))) {
+      deny({ status: 403, code: "credential_denied", message: "this caller may not use that connection" });
+      return;
+    }
     const connection = connectionId(provider, slot);
     if (!this.vault.checkGrant({ capability, connectionId: connection })) {
       deny({
@@ -589,8 +689,9 @@ export class EgressServer {
     }
 
     let exchange: Response;
+    let exchangeBody: string;
     try {
-      exchange = await this.fetchImpl(this.googleTokenUrl, {
+      const fetched = await this.fetchBounded(this.googleTokenUrl, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         cache: "no-store",
@@ -601,6 +702,8 @@ export class EgressServer {
           client_secret: this.options.oauth.google.clientSecret,
         }).toString(),
       });
+      exchange = fetched.response;
+      exchangeBody = fetched.body;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       deny({
@@ -612,7 +715,7 @@ export class EgressServer {
     }
     let payload: { access_token?: unknown; expires_in?: unknown; error?: unknown } = {};
     try {
-      payload = (await exchange.json()) as typeof payload;
+      payload = JSON.parse(exchangeBody) as typeof payload;
     } catch {
       // handled below by status/shape checks
     }

@@ -412,3 +412,70 @@ describe("previews", () => {
     expect(notice).toContain("Gone &lt;now&gt;.");
   });
 });
+
+describe("transform sandbox isolation", () => {
+  it("hands the transform nothing from the gateway's realm", () => {
+    // Each of these reached the real `process` when JSON, Math or the input
+    // were host objects: every object carries its realm's Function.
+    for (const source of [
+      "(input) => JSON.constructor.constructor('return process')()",
+      "(input) => Math.constructor.constructor('return process')()",
+      "(input) => input.constructor.constructor('return process')()",
+      "(input) => globalThis.constructor.constructor('return process')()",
+      "(input) => Object.getPrototypeOf(globalThis).constructor.constructor('return process')()",
+      "(input) => new Function('return process')()",
+      "(input) => eval('process')",
+    ]) {
+      try {
+        runTransform(source, { n: 1 }, 500);
+        expect.unreachable(source);
+      } catch (error) {
+        expect(error).toBeInstanceOf(TransformError);
+        expect((error as TransformError).kind).toBe("runtime");
+      }
+    }
+    expect(
+      runTransform(
+        "(input) => ({ process: typeof process, require: typeof require, fetch: typeof fetch, globals: Object.keys(globalThis) })",
+        {},
+        500,
+      ),
+    ).toMatchObject({ process: "undefined", require: "undefined", fetch: "undefined" });
+  });
+
+  it("counts queued microtasks against the budget", () => {
+    try {
+      runTransform("(input) => { Promise.resolve().then(() => { while (true) {} }); return {}; }", {}, 100);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as TransformError).kind).toBe("timeout");
+    }
+  });
+
+  it("refuses results that are not plain data", () => {
+    for (const source of [
+      "(input) => 42",
+      "(input) => 'text'",
+      "(input) => () => 1",
+      "(input) => { const a = {}; a.self = a; return a; }",
+    ]) {
+      try {
+        runTransform(source, {}, 500);
+        expect.unreachable(source);
+      } catch (error) {
+        expect((error as TransformError).kind).toBe("result");
+      }
+    }
+  });
+});
+
+it("contains malicious thrown objects and memory exhaustion and keeps working", () => {
+  for (const source of [
+    "() => { throw new Proxy({}, { get() { while(true) {} } }); }",
+    "() => { const a = []; while (true) a.push(new Array(4096).fill('x')); }",
+    "() => ({ get value() { while (true) {} } })",
+  ]) {
+    expect(() => runTransform(source, {}, 100)).toThrow(TransformError);
+  }
+  expect(runTransform("() => ({ ok: true })", {}, 500)).toEqual({ ok: true });
+});

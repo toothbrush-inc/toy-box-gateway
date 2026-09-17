@@ -159,6 +159,8 @@ export interface CallIdentity {
 
 export interface GatewayOptions {
   config: GatewayConfig;
+  /** Defaults to whether config.serve is present; the stdio wrapper sets false. */
+  hosted?: boolean;
   transportFactory?: TransportFactory;
   audit?: AuditWriter;
   env?: NodeJS.ProcessEnv;
@@ -186,7 +188,8 @@ export interface GatewayCore {
   egress: EgressServer;
   views?: ViewsService;
   egressTokenFor(capabilityId: string): string | undefined;
-  listTools(): Tool[];
+  /** The tools this caller may see; without an identity, everything. */
+  listTools(identity?: CallIdentity): Tool[];
   /** Mounted capabilities with the tools policy actually exposes — what the
    * home index renders. Deliberately lighter than buildGatewayStatus. */
   listCapabilities(): CapabilitySummary[];
@@ -274,6 +277,20 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
   const specs = new Map<string, CapabilitySpec>(
     config.capabilities.map((capability) => [capability.id, capability]),
   );
+  // The management tools act on the shared vault and on children every user
+  // shares, so over HTTP only configured owners get them; a stdio gateway
+  // has one user, who is the owner. Sessions without a client id are stdio.
+  const owners = new Set(config.serve?.owners ?? []);
+  const isOwner = (identity: CallIdentity): boolean =>
+    identity.clientId === undefined || (identity.user !== undefined && owners.has(identity.user));
+  const OWNER_TOOLS: readonly Tool[] = [
+    GATEWAY_RECONNECT_TOOL,
+    GATEWAY_GET_PROFILE_TOOL,
+    GATEWAY_SET_PROFILE_TOOL,
+    GATEWAY_GRANT_TOOL,
+    GATEWAY_REVOKE_GRANT_TOOL,
+  ];
+  const ownerToolNames = new Set(OWNER_TOOLS.map((tool) => tool.name));
   const audit =
     options.audit ??
     new AuditWriter({
@@ -331,9 +348,9 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
     if (!decision.allowed) {
       throw codedError(decision.message, "denied_by_policy");
     }
-    const callOptions: RequestOptions = {};
+    const callOptions: RequestOptions = { timeout: 60_000, maxTotalTimeout: 60_000 };
     if (opts?.timeoutMs !== undefined) {
-      callOptions.timeout = opts.timeoutMs;
+      callOptions.timeout = Math.min(opts.timeoutMs, 60_000);
     }
     const peerParams: {
       name: string;
@@ -365,6 +382,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
     ...(config.commons === undefined ? {} : { commonsDir: config.commons.dir }),
     versionOf: (capabilityId) => versionByCapability.get(capabilityId) ?? null,
     resolveCall: (nonce) => callScope.resolve(nonce),
+    ...((options.hosted ?? config.serve !== undefined) ? { credentialUsers: config.serve?.credentialUsers ?? {} } : {}),
     callPeer,
   });
   const egressUrl = await egressServer.listen();
@@ -389,7 +407,9 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
         },
         resourceUpdated: (uri) => {
           for (const session of sessions) {
-            if (session.resourceSubscriptions?.has(uri) === true) {
+            if (session.resourceSubscriptions?.has(uri) === true &&
+                views?.list(session.identity.clientId === undefined ? session.identity.user : session.identity.user ?? session.identity.clientId)
+                  .some((spec) => viewUri(spec.id) === uri)) {
               void session.server.sendResourceUpdated({ uri }).catch(() => undefined);
             }
           }
@@ -482,14 +502,10 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
         };
       });
     },
-    listTools: () => [
+    listTools: (identity) => [
       ...registry.listTools(),
       GATEWAY_STATUS_TOOL,
-      GATEWAY_RECONNECT_TOOL,
-      GATEWAY_GET_PROFILE_TOOL,
-      GATEWAY_SET_PROFILE_TOOL,
-      GATEWAY_GRANT_TOOL,
-      GATEWAY_REVOKE_GRANT_TOOL,
+      ...(identity === undefined || isOwner(identity) ? OWNER_TOOLS : []),
       ...(views === undefined
         ? []
         : [PREVIEW_VIEW_TOOL, PIN_VIEW_TOOL, RUN_VIEW_TOOL, LIST_VIEWS_TOOL, UNPIN_VIEW_TOOL]),
@@ -529,6 +545,20 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
           error_code: "task_not_supported",
         });
         throw new McpError(ErrorCode.InvalidParams, "task-based execution is not supported");
+      }
+
+      if (ownerToolNames.has(name) && !isOwner(identity)) {
+        record({
+          capability: "gateway",
+          tool: name,
+          outcome: "denied",
+          denied_by: "policy",
+          error_code: "owner_only",
+        });
+        return errorResult(
+          "owner_only",
+          `'${name}' is reserved for the gateway's owners (serve.owners in gateway.config.json)`,
+        );
       }
 
       if (name === GATEWAY_STATUS_TOOL.name) {
@@ -723,10 +753,11 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
           return errorResult("views_disabled", "views are disabled in the gateway config");
         }
         const viewsService = views;
+        const actor = identity.clientId === undefined ? identity.user : identity.user ?? identity.clientId;
         const args = request.params.arguments ?? {};
 
         if (name === LIST_VIEWS_TOOL.name) {
-          const list = viewsService.list().map((spec) => {
+          const list = viewsService.list(actor).map((spec) => {
             const snapshot = viewsService.getSnapshot(spec.id);
             const url = viewsService.urlFor(spec.id);
             return {
@@ -745,7 +776,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
         }
 
         if (name === PREVIEW_VIEW_TOOL.name) {
-          const result = await viewsService.preview(args["view"]);
+          const result = await viewsService.preview(args["view"], actor);
           if (!result.ok) {
             record({ capability: "gateway", tool: name, outcome: "error", error_code: result.code });
             return errorResult(result.code, result.message);
@@ -789,7 +820,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
         }
 
         if (name === PIN_VIEW_TOOL.name) {
-          const result = await viewsService.pin(args["view"]);
+          const result = await viewsService.pin(args["view"], actor);
           if (!result.ok) {
             record({ capability: "gateway", tool: name, outcome: "error", error_code: result.code });
             const payload = {
@@ -838,7 +869,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
         const id = typeof args["id"] === "string" ? args["id"] : "";
 
         if (name === UNPIN_VIEW_TOOL.name) {
-          if (!viewsService.unpin(id)) {
+          if (!viewsService.unpin(id, actor)) {
             record({ capability: "gateway", tool: name, outcome: "error", error_code: "unknown_view" });
             return errorResult("unknown_view", `no pinned view '${id}'; call list_views`);
           }
@@ -846,7 +877,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
           return jsonResult({ ok: true, data: { id, unpinned: true } });
         }
 
-        const spec = viewsService.get(id);
+        const spec = viewsService.get(id, actor);
         const snapshot =
           spec === undefined
             ? undefined
@@ -920,7 +951,7 @@ export async function createGatewayCore(options: GatewayOptions): Promise<Gatewa
         );
       }
 
-      const callOptions: RequestOptions = { signal: extra.signal, resetTimeoutOnProgress: true };
+      const callOptions: RequestOptions = { signal: extra.signal, timeout: 60_000, resetTimeoutOnProgress: false, maxTotalTimeout: 60_000 };
       const upstreamToken = extra._meta?.progressToken;
       if (upstreamToken !== undefined) {
         callOptions.onprogress = (progress) => {
@@ -1022,7 +1053,7 @@ export function createGatewaySession(core: GatewayCore, identity: CallIdentity =
             "(dry-run proves before persisting), then run_view/list_views/unpin_view. " +
             "Token thrift for views: check each bound query tool's caps (row/hour limits, payload " +
             "size) before designing a transform; draft the transform in a local file and smoke-test " +
-            "it under node:vm with only JSON+Math (1 s budget) before previewing; preview_view/pin_view " +
+            "it with the gateway runTransform helper (1 s budget) before previewing; preview_view/pin_view " +
             "take the whole transform inline and return the full card model, so batch edits, keep " +
             "preview rounds few, and never echo the transform back into the conversation. Edits to a " +
             "capability's source reach this gateway only after that capability is restarted/redeployed."),
@@ -1044,7 +1075,7 @@ export function createGatewaySession(core: GatewayCore, identity: CallIdentity =
     },
   };
 
-  server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: core.listTools() }));
+  server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: core.listTools(session.identity) }));
   server.setRequestHandler(CallToolRequestSchema, (request, extra) =>
     core.callTool(request, extra, session.identity),
   );
@@ -1052,15 +1083,15 @@ export function createGatewaySession(core: GatewayCore, identity: CallIdentity =
   if (views !== undefined) {
     const RESOURCE_NOT_FOUND = -32002 as ErrorCode;
     const knownUri = (uri: string): boolean =>
-      views.list().some((spec) => viewUri(spec.id) === uri);
+      views.list(identity.clientId === undefined ? identity.user : identity.user ?? identity.clientId).some((spec) => viewUri(spec.id) === uri);
     server.setRequestHandler(ListResourcesRequestSchema, () => ({
-      resources: views.listResources(),
+      resources: views.listResources(identity.clientId === undefined ? identity.user : identity.user ?? identity.clientId),
     }));
     server.setRequestHandler(ListResourceTemplatesRequestSchema, () => ({
       resourceTemplates: [],
     }));
     server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-      const contents = await views.readResource(request.params.uri);
+      const contents = await views.readResource(request.params.uri, identity.clientId === undefined ? identity.user : identity.user ?? identity.clientId);
       if (contents === undefined) {
         throw new McpError(RESOURCE_NOT_FOUND, `resource not found: ${request.params.uri}`);
       }
@@ -1084,7 +1115,7 @@ export function createGatewaySession(core: GatewayCore, identity: CallIdentity =
 
 /** Stdio-compatible wrapper: one core, one session, one close. */
 export async function createGateway(options: GatewayOptions): Promise<Gateway> {
-  const core = await createGatewayCore(options);
+  const core = await createGatewayCore({ ...options, hosted: false });
   const session = createGatewaySession(core);
   return {
     server: session.server,

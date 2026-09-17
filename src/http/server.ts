@@ -22,6 +22,7 @@ import { createGatewaySession, type CallIdentity, type GatewayCore } from "../ga
 import {
   renderCardHtml,
   renderCardJson,
+  renderConsentHtml,
   renderNoticeHtml,
   renderPreviewHtml,
   renderPreviewJson,
@@ -35,6 +36,10 @@ import { SessionManager } from "./sessions.js";
 
 /** Trusted identity header handed to fronted apps by Caddy's forward_auth `copy_headers`. */
 export const FORWARDED_USER_HEADER = "X-Forwarded-User";
+
+/** Where the MCP consent page posts its answer (kept off `/authorize`, which
+ * the SDK router owns as a prefix). */
+export const CONSENT_PATH = "/consent";
 
 export interface HttpGatewayOptions {
   core: GatewayCore;
@@ -72,7 +77,7 @@ function readCookie(req: Request, name: string): string | undefined {
   for (const part of header.split(";")) {
     const separator = part.indexOf("=");
     if (separator > 0 && part.slice(0, separator).trim() === name) {
-      return decodeURIComponent(part.slice(separator + 1).trim());
+      try { return decodeURIComponent(part.slice(separator + 1).trim()); } catch { return undefined; }
     }
   }
   return undefined;
@@ -97,6 +102,13 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   // No framework banner on a public page.
   app.disable("x-powered-by");
   app.use(hostHeaderValidation(allowedHosts));
+  app.use((_req, res, next) => {
+    res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Cache-Control", "no-store");
+    next();
+  });
   app.use(
     "/mcp",
     cors({
@@ -137,6 +149,14 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
           ...(typeof req.query["code"] === "string" ? { code: req.query["code"] } : {}),
           ...(typeof req.query["error"] === "string" ? { error: req.query["error"] } : {}),
         });
+        if (result.kind === "consent") {
+          res.setHeader("Cache-Control", "no-store");
+          res
+            .status(200)
+            .type("text/html; charset=utf-8")
+            .send(renderConsentHtml(result.consent, CONSENT_PATH));
+          return;
+        }
         if (result.sessionCookie !== undefined) {
           res.cookie(SESSION_COOKIE, result.sessionCookie, {
             httpOnly: true,
@@ -153,11 +173,32 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
         res.status(400).type("text/plain").send(`sign-in failed: ${message}`);
       }
     });
+    // The consent page posts back here. The token is the only credential:
+    // it went to the browser that finished Google sign-in and is single use,
+    // so no other page can answer on that person's behalf.
+    app.post(CONSENT_PATH, express.urlencoded({ extended: false }), (req: Request, res: Response) => {
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<
+        string,
+        unknown
+      >;
+      const token = typeof body["token"] === "string" ? body["token"] : undefined;
+      const decision = body["decision"] === "allow" ? "allow" : "deny";
+      try {
+        res.redirect(303, oauth.completeConsent(token, decision).redirectTo);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        res
+          .status(400)
+          .type("text/html; charset=utf-8")
+          .send(renderNoticeHtml("Sign-in expired", message));
+      }
+    });
     app.get("/login", (req: Request, res: Response) => {
       const next = typeof req.query["next"] === "string" ? req.query["next"] : "/";
       res.redirect(oauth.startBrowserLogin(next));
     });
-    app.get("/logout", (_req: Request, res: Response) => {
+    app.get("/logout", (req: Request, res: Response) => {
+      oauth.revokeSessionCookie(readCookie(req, SESSION_COOKIE));
       res.clearCookie(SESSION_COOKIE, { path: "/", ...cookieScope });
       // A host-only cookie from before the domain was set goes too.
       if (cookieDomain !== undefined) {
@@ -182,7 +223,13 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
         if (!requireSession(req, res)) {
           return;
         }
-        const started = connect.start(req.query["slot"], req.query["next"]);
+        const user = oauth.verifySessionCookie(readCookie(req, SESSION_COOKIE));
+        const slot = typeof req.query["slot"] === "string" ? req.query["slot"].trim().toLowerCase() : "";
+        if (user === null || !serve.credentialUsers[`google:${slot}`]?.includes(user)) {
+          res.status(403).send("this account may not connect that slot");
+          return;
+        }
+        const started = connect.start(slot, req.query["next"], user);
         if (!started.ok) {
           res
             .status(400)
@@ -200,7 +247,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
           ...(typeof req.query["state"] === "string" ? { state: req.query["state"] } : {}),
           ...(typeof req.query["code"] === "string" ? { code: req.query["code"] } : {}),
           ...(typeof req.query["error"] === "string" ? { error: req.query["error"] } : {}),
-        });
+        }, oauth.verifySessionCookie(readCookie(req, SESSION_COOKIE)) ?? undefined);
         const backLink =
           result.next === undefined ? undefined : { href: result.next, label: "Back to the setup page" };
         if (!result.ok) {
@@ -273,7 +320,9 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
   // unauthenticated browsers get sent to the login flow instead of a 401.
   const viewsAuth: express.RequestHandler = (req, res, next) => {
     if (oauth !== undefined) {
-      if (oauth.verifySessionCookie(readCookie(req, SESSION_COOKIE)) !== null) {
+      const user = oauth.verifySessionCookie(readCookie(req, SESSION_COOKIE));
+      if (user !== null) {
+        res.locals["viewUser"] = user;
         next();
         return;
       }
@@ -282,7 +331,10 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
         return;
       }
     }
-    bearer(req, res, next);
+    bearer(req, res, () => {
+      res.locals["viewUser"] = req.auth?.extra?.["user"] ?? req.auth?.clientId;
+      next();
+    });
   };
 
   const withExistingSession = async (req: Request, res: Response): Promise<void> => {
@@ -296,7 +348,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
       res.status(400).json(rpcError(-32000, "Bad Request: no session ID provided"));
       return;
     }
-    const found = sessions.get(sessionId, auth.clientId);
+    const found = sessions.get(sessionId, JSON.stringify([auth.clientId, auth.extra?.["user"] ?? null]));
     if (found === "forbidden") {
       res.status(403).json(rpcError(-32000, "session belongs to a different client"));
       return;
@@ -341,7 +393,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
         keepAliveMs: serve.session.keepAliveMs,
         onsessioninitialized: (sid) => {
           session.identity.sessionId = sid;
-          sessions.register(sid, { transport, session, authKey: auth.clientId });
+          sessions.register(sid, { transport, session, authKey: JSON.stringify([auth.clientId, auth.extra?.["user"] ?? null]) });
         },
         onsessionclosed: (sid) => {
           void sessions.remove(sid);
@@ -368,11 +420,11 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
     }
   });
 
-  app.get("/mcp", bearer, (req: Request, res: Response) => {
-    void withExistingSession(req, res);
+  app.get("/mcp", bearer, async (req: Request, res: Response) => {
+    await withExistingSession(req, res);
   });
-  app.delete("/mcp", bearer, (req: Request, res: Response) => {
-    void withExistingSession(req, res);
+  app.delete("/mcp", bearer, async (req: Request, res: Response) => {
+    await withExistingSession(req, res);
   });
 
   // The glanceable card surface. Bearer-authed like /mcp; HTML by default,
@@ -446,7 +498,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
 
   if (views !== undefined) {
     app.get("/views", viewsAuth, (req: Request, res: Response) => {
-      const list = views.list().map((spec) => {
+      const list = views.list(String(res.locals["viewUser"])).map((spec) => {
         const snapshot = views.getSnapshot(spec.id);
         return {
           id: spec.id,
@@ -464,7 +516,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
           .type("text/html; charset=utf-8")
           .send(
             renderViewsIndexHtml(
-              views.list().map((spec) => ({ spec, snapshot: views.getSnapshot(spec.id) })),
+              views.list(String(res.locals["viewUser"])).map((spec) => ({ spec, snapshot: views.getSnapshot(spec.id) })),
             ),
           );
         return;
@@ -477,7 +529,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
       const raw = typeof req.params["token"] === "string" ? req.params["token"] : "";
       const wantsJson = raw.endsWith(".json");
       const token = wantsJson ? raw.slice(0, -".json".length) : raw;
-      const preview = views.getPreview(token);
+      const preview = views.getPreview(token, String(res.locals["viewUser"]));
       res.setHeader("Cache-Control", "no-store");
       if (preview === undefined) {
         if (!wantsJson && (req.headers.accept ?? "").includes("text/html")) {
@@ -509,7 +561,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
       const raw = typeof req.params["id"] === "string" ? req.params["id"] : "";
       const wantsJson = raw.endsWith(".json");
       const id = wantsJson ? raw.slice(0, -".json".length) : raw;
-      const spec = views.get(id);
+      const spec = views.get(id, String(res.locals["viewUser"]));
       if (spec === undefined) {
         res.status(404).json({ ok: false, error: { code: "unknown_view", message: `no pinned view '${id}'` } });
         return;

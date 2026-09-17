@@ -58,6 +58,7 @@ interface PendingConnect {
   expiresAtMs: number;
   /** Where to send the person afterwards (the app that started this). */
   next?: string | undefined;
+  user?: string;
 }
 
 export class GoogleConnectFlow {
@@ -97,7 +98,7 @@ export class GoogleConnectFlow {
    * this site (a path, or https on this host or a subdomain of it); anything
    * else is dropped and the plain notice page shows instead.
    */
-  start(rawSlot: unknown, rawNext?: unknown): ConnectStart {
+  start(rawSlot: unknown, rawNext?: unknown, user?: string): ConnectStart {
     const slot = typeof rawSlot === "string" ? rawSlot.trim().toLowerCase() : "";
     const next =
       typeof rawNext === "string" ? safeNext(rawNext, new URL(this.options.publicUrl).hostname) : undefined;
@@ -122,6 +123,7 @@ export class GoogleConnectFlow {
     const verifier = randomBytes(32).toString("base64url");
     this.pending.set(state, {
       slot,
+      ...(user === undefined ? {} : { user }),
       verifier,
       expiresAtMs: this.now() + STATE_TTL_MS,
       ...(next === undefined ? {} : { next }),
@@ -151,7 +153,7 @@ export class GoogleConnectFlow {
     state?: string | undefined;
     code?: string | undefined;
     error?: string | undefined;
-  }): Promise<ConnectResult> {
+  }, user?: string): Promise<ConnectResult> {
     const entry = query.state === undefined ? undefined : this.pending.get(query.state);
     if (query.state !== undefined) {
       this.pending.delete(query.state);
@@ -163,6 +165,7 @@ export class GoogleConnectFlow {
     if (entry === undefined || entry.expiresAtMs <= this.now()) {
       return { ok: false, message: "unknown or expired connect attempt; start over" };
     }
+    if (entry.user !== user) return { ok: false, message: "connect attempt belongs to another user" };
     if (query.code === undefined || query.code === "") {
       return { ok: false, message: "Google returned no authorization code", next };
     }
