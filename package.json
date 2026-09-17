@@ -33,7 +33,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@dvd-toy-box/vault": "github:davidd8/local-vault#f86df4e909fd7d86255a2e5d3353ffbd41f5f360",
+    "@dvd-toy-box/vault": "^0.12.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
