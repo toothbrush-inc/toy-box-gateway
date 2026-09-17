@@ -32,7 +32,7 @@ import {
 } from "@dvd-toy-box/vault";
 
 import type { AuditEntry, AuditWriter } from "./audit.js";
-import { legacyUserSlug, userMayUseSlot, userSlug } from "./call-scope.js";
+import { userMayUseSlot, userSlug } from "./call-scope.js";
 import type { CapabilitySpec } from "./config.js";
 import { redactErrorMessage } from "./redact.js";
 
@@ -373,9 +373,7 @@ export class EgressServer {
    * Grants stay on the shared vault: the operator grants a capability a field
    * once, and each user supplies their own value for it.
    *
-   * Profile dirs are keyed by `userSlug` (hash for emails). If the hash dir is
-   * missing, fall back to the pre-hash punctuation slug so existing stores
-   * keep resolving until operators rename them.
+   * Profile dirs are keyed by `userSlug` (hash for emails).
    */
   private profileFor(user: string | undefined): Record<string, string> {
     const slug = user === undefined ? null : userSlug(user);
@@ -384,17 +382,7 @@ export class EgressServer {
     }
     let store = this.userProfiles.get(slug);
     if (store === undefined) {
-      let path = join(this.usersDir, slug, "profile.json");
-      if (!existsSync(path) && user !== undefined) {
-        const legacy = legacyUserSlug(user);
-        if (legacy !== null && legacy !== slug) {
-          const legacyPath = join(this.usersDir, legacy, "profile.json");
-          if (existsSync(legacyPath)) {
-            path = legacyPath;
-          }
-        }
-      }
-      store = new FileProfileStore(path);
+      store = new FileProfileStore(join(this.usersDir, slug, "profile.json"));
       this.userProfiles.set(slug, store);
     }
     return store.read();

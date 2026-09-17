@@ -401,14 +401,6 @@ describe("EgressServer /profile per user", () => {
     expect(result.json["fields"]).toEqual({ units: "metric" });
   });
 
-  it("still reads a pre-hash profile directory during migration", async () => {
-    const { harness, usersDir } = await startWithUsers();
-    seedUser(usersDir, "alice_at_example_com", { units: "metric" });
-    const result = await call(harness, "/profile", "tok-fitness", { fields: ["units"] }, "n-alice");
-    expect(result.status).toBe(200);
-    expect(result.json["fields"]).toEqual({ units: "metric" });
-  });
-
   it("attributes the broker row to the caller, still without values", async () => {
     const { harness, usersDir } = await startWithUsers();
     seedUser(usersDir, "icd25a6171969f2a3c6e35c7667e3908e", { units: "metric" });
