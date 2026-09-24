@@ -91,6 +91,23 @@ describe("loadGatewayConfig", () => {
     expect(config.audit.maxBytes).toBe(5242880);
   });
 
+  it("wants a real date on store.legal and a dataUse line no longer than a paragraph", () => {
+    const base = { capabilities: [{ id: "weather", command: "x" }] };
+    expect(() =>
+      GatewayConfigSchema.parse({ ...base, store: { legal: { operator: "Toothbrush Inc.", updated: "Sept 24" } } }),
+    ).toThrow(/YYYY-MM-DD/u);
+    const ok = GatewayConfigSchema.parse({
+      ...base,
+      store: { legal: { operator: "Toothbrush Inc.", updated: "2026-09-24" } },
+      capabilities: [{ id: "weather", command: "x", web: { dataUse: "Keeps your locations." } }],
+    });
+    expect(ok.store?.legal?.jurisdiction).toBeUndefined();
+    expect(ok.capabilities[0]?.web?.dataUse).toBe("Keeps your locations.");
+    expect(() =>
+      GatewayConfigSchema.parse({ ...base, capabilities: [{ id: "weather", command: "x", web: { dataUse: "x".repeat(601) } }] }),
+    ).toThrow();
+  });
+
   it("fails actionably on unreadable files, bad JSON, and schema violations", () => {
     const dir = tempDir();
     expect(() => loadGatewayConfig(join(dir, "missing.json"))).toThrow(/Unable to read/);

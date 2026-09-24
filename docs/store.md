@@ -96,3 +96,40 @@ every mounted app as `id (name): tagline` so an assistant can say what is here
 before calling a tool. Change the words in one place and all of them follow.
 
 See [config.md](config.md) for the `web`, `links` and `store` config blocks.
+
+## Privacy and terms pages
+
+Set `store.legal` and the gateway serves a privacy policy at `/privacy` and
+terms of use at `/terms`, public, linked from the store's footer. Google's
+OAuth consent screen wants both on the app's own domain, which is why they
+live here and not on a document host.
+
+```jsonc
+"store": {
+  "legal": {
+    "operator": "Toothbrush Inc.",       // the legal name behind the site
+    "updated": "2026-09-24",             // effective date, YYYY-MM-DD
+    "jurisdiction": "the State of …",    // optional; omitted, no governing-law clause
+    "contact": "support@…"               // optional; where questions go (defaults to contact.email)
+  }
+}
+```
+
+The gateway writes the text from what it actually does — Google sign-in
+and what it receives (an email address), the waiting list and its cookies,
+tokens for assistants, credentials brokered for connected accounts (with
+the connect scopes named in plain words), the audit log — and includes the
+Google API Services User Data Policy "Limited Use" statement the consent
+screen review asks for. It makes no claim the code cannot vouch for.
+
+What it cannot know is what each app keeps. That is the app's own line,
+`dataUse` (≤600 characters), in its manifest `store` block or overridden
+in the config `web` block like any other copy:
+
+```jsonc
+"store": { "dataUse": "Keeps the ids of the events it mirrors and the keywords you exclude; never stores event titles." }
+```
+
+An app without one is listed as "keeps whatever its feature needs; ask us
+for specifics" — true, but worth replacing. Sibling sites from `links` are
+named as separate services with their own pages; they are not covered.

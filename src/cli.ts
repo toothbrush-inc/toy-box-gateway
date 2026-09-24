@@ -71,6 +71,7 @@ async function runServe(args: readonly string[]): Promise<void> {
     ...(config.store === undefined ? {} : { store: config.store }),
     ...(auth.provider === undefined ? {} : { oauth: auth.provider }),
     ...(connect === undefined ? {} : { connect }),
+    ...(config.oauth?.google?.connect === undefined ? {} : { connectScopes: config.oauth.google.connect.scopes }),
   });
   onShutdown(async () => {
     await http.close();

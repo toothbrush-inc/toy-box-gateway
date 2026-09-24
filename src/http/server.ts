@@ -32,6 +32,7 @@ import {
 import { BoundedEventStore } from "./event-store.js";
 import type { GoogleConnectFlow } from "./connect.js";
 import { renderStoreHtml, storeJson, type StoreApp, type StoreModel } from "./landing.js";
+import { PRIVACY_PATH, TERMS_PATH, renderPrivacyHtml, renderTermsHtml, type LegalModel } from "./legal.js";
 import { SESSION_COOKIE, WAITLIST_COOKIE, type GatewayOAuthProvider } from "./oauth/provider.js";
 import { SessionManager } from "./sessions.js";
 
@@ -58,6 +59,8 @@ export interface HttpGatewayOptions {
   /** Consent flow for brokered google connections (config oauth.google.connect).
    * Session-gated, so it only mounts alongside `oauth`. */
   connect?: GoogleConnectFlow;
+  /** The Google scopes that flow asks for, named on the privacy page. */
+  connectScopes?: readonly string[];
   log?: (line: string) => void;
   /** Extra express wiring before /mcp routes. */
   configureApp?: (app: express.Express) => void;
@@ -516,6 +519,28 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
     next();
   };
 
+  // The privacy policy and terms: public, and only when the operator has
+  // supplied the facts the text needs (config store.legal).
+  const legal = options.store?.legal;
+  const legalPaths = legal === undefined ? undefined : { privacyPath: PRIVACY_PATH, termsPath: TERMS_PATH };
+  if (options.store !== undefined && legal !== undefined) {
+    const store = options.store;
+    const legalModel = (): LegalModel => ({
+      host,
+      store: { ...store, legal },
+      apps: storeApps(),
+      hasLogin: oauth !== undefined,
+      connectScopes: options.connectScopes ?? [],
+      mcpUrl: `${publicUrl}/mcp`,
+    });
+    app.get(PRIVACY_PATH, (_req: Request, res: Response) => {
+      res.status(200).type("text/html; charset=utf-8").send(renderPrivacyHtml(legalModel()));
+    });
+    app.get(TERMS_PATH, (_req: Request, res: Response) => {
+      res.status(200).type("text/html; charset=utf-8").send(renderTermsHtml(legalModel()));
+    });
+  }
+
   app.get("/", viewerOf, (req: Request, res: Response) => {
     const viewer = typeof res.locals["viewer"] === "string" ? res.locals["viewer"] : undefined;
     const signInPath = "/login?next=%2F";
@@ -537,6 +562,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
         ? {}
         : { viewer: { email: viewer }, capabilities: core.listCapabilities() }),
       ...(oauth === undefined || viewer !== undefined || waiting !== null ? {} : { signInPath }),
+      ...(legalPaths === undefined ? {} : { legal: legalPaths }),
       ...(waiting === null
         ? {}
         : {

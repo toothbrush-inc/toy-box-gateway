@@ -66,6 +66,7 @@ export function resolveStoreEntry(
           badge: manifest.badge,
           accent: manifest.accent,
           repo: manifest.repo,
+          dataUse: manifest.dataUse,
         });
   const { path: configPath, ...fromConfig } = spec.web ?? {};
   const merged: Partial<StoreCopy> = { ...fromManifest, ...defined<StoreCopy>(fromConfig) };
