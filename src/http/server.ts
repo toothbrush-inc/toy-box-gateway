@@ -32,7 +32,7 @@ import {
 import { BoundedEventStore } from "./event-store.js";
 import type { GoogleConnectFlow } from "./connect.js";
 import { renderStoreHtml, storeJson, type StoreApp, type StoreModel } from "./landing.js";
-import { SESSION_COOKIE, type GatewayOAuthProvider } from "./oauth/provider.js";
+import { SESSION_COOKIE, WAITLIST_COOKIE, type GatewayOAuthProvider } from "./oauth/provider.js";
 import { SessionManager } from "./sessions.js";
 
 /** Trusted identity header handed to fronted apps by Caddy's forward_auth `copy_headers`. */
@@ -41,6 +41,8 @@ export const FORWARDED_USER_HEADER = "X-Forwarded-User";
 /** Where the MCP consent page posts its answer (kept off `/authorize`, which
  * the SDK router owns as a prefix). */
 export const CONSENT_PATH = "/consent";
+/** Where the store page's waiting-list banner posts its one request. */
+export const WAITLIST_PATH = "/waitlist";
 
 export interface HttpGatewayOptions {
   core: GatewayCore;
@@ -158,6 +160,20 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
             .send(renderConsentHtml(result.consent, CONSENT_PATH));
           return;
         }
+        if (result.kind === "waitlist") {
+          // Not a session: nothing behind forward_auth opens on this. It only
+          // makes the store page recognise the browser and put the banner up.
+          // Host-only on purpose — sibling hosts have no use for it.
+          res.cookie(WAITLIST_COOKIE, result.token, {
+            httpOnly: true,
+            secure: secureCookies,
+            sameSite: "lax",
+            maxAge: 30 * 86_400_000,
+            path: "/",
+          });
+          res.redirect("/");
+          return;
+        }
         if (result.sessionCookie !== undefined) {
           res.cookie(SESSION_COOKIE, result.sessionCookie, {
             httpOnly: true,
@@ -194,6 +210,27 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
           .send(renderNoticeHtml("Sign-in expired", message));
       }
     });
+    // The banner's form posts back here. Like consent, the token in the
+    // form is the credential: it is the waitlist cookie's value, which only
+    // the browser that finished Google sign-in was given, and it names the
+    // address Google confirmed — nobody can put someone else on the list.
+    app.post(WAITLIST_PATH, express.urlencoded({ extended: false }), (req: Request, res: Response) => {
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<
+        string,
+        unknown
+      >;
+      const token = typeof body["token"] === "string" ? body["token"] : undefined;
+      try {
+        oauth.joinWaitlist(token);
+        res.redirect(303, "/");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        res
+          .status(400)
+          .type("text/html; charset=utf-8")
+          .send(renderNoticeHtml("Could not join", message, { href: "/login", label: "Sign in again" }));
+      }
+    });
     app.get("/login", (req: Request, res: Response) => {
       const next = typeof req.query["next"] === "string" ? req.query["next"] : "/";
       res.redirect(oauth.startBrowserLogin(next));
@@ -201,6 +238,7 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
     app.get("/logout", (req: Request, res: Response) => {
       oauth.revokeSessionCookie(readCookie(req, SESSION_COOKIE));
       res.clearCookie(SESSION_COOKIE, { path: "/", ...cookieScope });
+      res.clearCookie(WAITLIST_COOKIE, { path: "/" });
       // A host-only cookie from before the domain was set goes too.
       if (cookieDomain !== undefined) {
         res.clearCookie(SESSION_COOKIE, { path: "/" });
@@ -480,6 +518,16 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
 
   app.get("/", viewerOf, (req: Request, res: Response) => {
     const viewer = typeof res.locals["viewer"] === "string" ? res.locals["viewer"] : undefined;
+    const signInPath = "/login?next=%2F";
+    // A browser that signed in but was not invited: the same page, with a
+    // banner and the hosted apps locked. A session always wins over it.
+    const waitlistCookie = readCookie(req, WAITLIST_COOKIE);
+    const waiting =
+      oauth === undefined || viewer !== undefined ? null : oauth.waitlistStatus(waitlistCookie);
+    if (waiting?.status === "invited") {
+      // The cookie has done its job: the next sign-in is a real one.
+      res.clearCookie(WAITLIST_COOKIE, { path: "/" });
+    }
     const model: StoreModel = {
       host,
       ...(options.store === undefined ? {} : { store: options.store }),
@@ -488,7 +536,18 @@ export async function startHttpGateway(options: HttpGatewayOptions): Promise<Htt
       ...(viewer === undefined
         ? {}
         : { viewer: { email: viewer }, capabilities: core.listCapabilities() }),
-      ...(oauth === undefined || viewer !== undefined ? {} : { signInPath: "/login?next=%2F" }),
+      ...(oauth === undefined || viewer !== undefined || waiting !== null ? {} : { signInPath }),
+      ...(waiting === null
+        ? {}
+        : {
+            waitlist: {
+              ...waiting,
+              // The form echoes the cookie: that is the credential to join.
+              ...(waiting.status === "offer" ? { token: waitlistCookie } : {}),
+              action: WAITLIST_PATH,
+              signInPath,
+            },
+          }),
     };
     res.setHeader("Cache-Control", "no-store");
     if ((req.headers.accept ?? "").includes("text/html")) {

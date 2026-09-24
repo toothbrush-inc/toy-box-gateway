@@ -11,6 +11,7 @@ import { AuditWriter } from "../src/audit.js";
 import { GatewayConfigSchema, type GatewayConfig } from "../src/config.js";
 import { createGatewayCore, type GatewayCore } from "../src/gateway.js";
 import { signJwt, verifyJwt } from "../src/http/oauth/jwt.js";
+import { AccessStore } from "../src/http/oauth/access.js";
 import { GatewayOAuthProvider, safeNext } from "../src/http/oauth/provider.js";
 import { OAuthDiskStore } from "../src/http/oauth/store.js";
 import { startHttpGateway, type HttpGateway } from "../src/http/server.js";
@@ -87,13 +88,39 @@ interface OAuthHarness {
   google: FakeGoogle;
   core: GatewayCore;
   http: HttpGateway;
+  /** Present when the harness was started with a waiting list. */
+  access?: AccessStore;
+  /** Where the OAuth store (and the waiting list) lives, and what signs tokens. */
+  oauthDir: string;
+  signingKey: Buffer;
 }
 
-async function startHarness(serveExtra: Record<string, unknown> = {}): Promise<OAuthHarness> {
+async function startHarness(
+  serveExtra: Record<string, unknown> = {},
+  extra: { waitlist?: boolean; storeName?: string } = {},
+): Promise<OAuthHarness> {
   const dir = tempDir();
+  const oauthDir = join(dir, "oauth");
+  const signingKey = randomBytes(32);
+  const access = extra.waitlist === true ? new AccessStore(oauthDir, ["alice@example.com"]) : undefined;
   const fake = await startFakeWeather();
   const manifestPath = join(dir, "capability.json");
-  writeFileSync(manifestPath, JSON.stringify({ id: "weather", connections: [], tools: { query: ["echo"] } }));
+  writeFileSync(
+    manifestPath,
+    JSON.stringify({
+      id: "weather",
+      connections: [],
+      tools: { query: ["echo"] },
+      // A hosted page and a source link, so the store page has both an
+      // "Open" to lock and a repo link to leave alone.
+      store: {
+        name: "Weather",
+        tagline: "Know which forecast to trust.",
+        web: { path: "https://weather.example" },
+        repo: "https://github.com/example/weather",
+      },
+    }),
+  );
   const google = await startFakeGoogle();
   cleanups.push(() => google.close());
 
@@ -125,9 +152,10 @@ async function startHarness(serveExtra: Record<string, unknown> = {}): Promise<O
   }
   const provider = new GatewayOAuthProvider({
     issuerUrl: serve.publicUrl,
-    store: new OAuthDiskStore(join(dir, "oauth")),
-    signingKey: randomBytes(32),
+    store: new OAuthDiskStore(oauthDir),
+    signingKey,
     allowedEmails: ["alice@example.com"],
+    ...(access === undefined ? {} : { access }),
     google: { clientId: "login-client", clientSecret: "login-secret" },
     googleEndpoints: google.endpoints,
     accessTokenTtlSec: 3600,
@@ -140,13 +168,40 @@ async function startHarness(serveExtra: Record<string, unknown> = {}): Promise<O
     serve,
     verifier: provider,
     oauth: provider,
+    ...(extra.storeName === undefined ? {} : { store: { name: extra.storeName } }),
     log: () => undefined,
   });
   cleanups.push(async () => {
     await http.close();
     await core.close();
   });
-  return { url: `http://127.0.0.1:${String(http.port)}`, provider, google, core, http };
+  return {
+    url: `http://127.0.0.1:${String(http.port)}`,
+    provider,
+    google,
+    core,
+    http,
+    oauthDir,
+    signingKey,
+    ...(access === undefined ? {} : { access }),
+  };
+}
+
+/** A browser login as `email`: /login -> fake Google -> callback. */
+async function browserLogin(url: string, google: FakeGoogle, email: string, next = "/"): Promise<Response> {
+  google.setEmail(email);
+  const login = await fetch(`${url}/login?next=${encodeURIComponent(next)}`, { redirect: "manual" });
+  const gstate = new URL(login.headers.get("location") ?? "").searchParams.get("state") ?? "";
+  return fetch(`${url}/auth/google/callback?state=${gstate}&code=ok`, { redirect: "manual" });
+}
+
+async function joinWaitlist(url: string, token: string): Promise<Response> {
+  return fetch(`${url}/waitlist`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token }).toString(),
+    redirect: "manual",
+  });
 }
 
 function pkcePair(): { verifier: string; challenge: string } {
@@ -528,4 +583,158 @@ it("rejects redirect parser control-character and backslash tricks", () => {
     expect(safeNext(value, "gw.example.com")).toBeUndefined();
   }
   expect(safeNext("/views?x=1", "gw.example.com")).toBe("/views?x=1");
+});
+
+describe("waiting list", () => {
+  /** The cookie the callback hands an uninvited browser. */
+  function waitlistCookie(response: Response): string {
+    const raw = response.headers.getSetCookie().find((c) => c.startsWith("gw_waitlist=")) ?? "";
+    return raw.split(";")[0] ?? "";
+  }
+
+  async function storePage(url: string, cookie: string): Promise<string> {
+    const page = await fetch(url, { headers: { Accept: "text/html", Cookie: cookie } });
+    expect(page.status).toBe(200);
+    return page.text();
+  }
+
+  it("sends an uninvited browser to the store page with a banner, the hosted apps locked and the source links live", async () => {
+    const harness = await startHarness({}, { waitlist: true, storeName: "Toys" });
+    const access = harness.access!;
+
+    const refused = await browserLogin(harness.url, harness.google, "Guest@Example.com", "/views");
+    expect(refused.status).toBe(302);
+    expect(refused.headers.get("location")).toBe("/");
+    expect(refused.headers.getSetCookie().some((c) => c.startsWith("gw_session="))).toBe(false);
+    const cookie = waitlistCookie(refused);
+    expect(cookie).toContain("gw_waitlist=");
+
+    const html = await storePage(harness.url, cookie);
+    expect(html).toContain("Toys is in a limited preview");
+    expect(html).toContain("guest@example.com");
+    expect(html).toContain("Join the waiting list");
+    expect(html).toContain("invite only");
+    expect(html).not.toContain('href="https://weather.example"');
+    expect(html).toContain('href="https://github.com/example/weather"');
+    expect(html).toContain('href="/logout"');
+    const token = /name="token" value="([^"]+)"/u.exec(html)?.[1] ?? "";
+    expect(token).not.toBe("");
+    expect(access.listWaitlist()).toEqual([]);
+
+    // The JSON twin says the same, minus the token.
+    const json = (await (await fetch(harness.url, { headers: { Cookie: cookie } })).json()) as {
+      data: { waitlist?: Record<string, unknown>; apps: { href?: string }[] };
+    };
+    expect(json.data.waitlist).toEqual({ email: "guest@example.com", status: "offer" });
+
+    // Nothing behind forward_auth opens on the waitlist cookie.
+    expect((await fetch(`${harness.url}/session/verify`, { headers: { Cookie: cookie } })).status).toBe(401);
+
+    const joined = await joinWaitlist(harness.url, token);
+    expect(joined.status).toBe(303);
+    expect(joined.headers.get("location")).toBe("/");
+    expect(access.listWaitlist().map((entry) => entry.email)).toEqual(["guest@example.com"]);
+    expect(access.isAllowed("guest@example.com")).toBe(false);
+
+    const waiting = await storePage(harness.url, cookie);
+    expect(waiting).toContain("is on the waiting list");
+    expect(waiting).not.toContain('name="token"');
+    expect(waiting).toContain("invite only");
+
+    // Asking again keeps the first place; a fresh sign-in lands on the same
+    // banner with a fresh cookie.
+    const first = access.waitlistEntry("guest@example.com");
+    expect((await joinWaitlist(harness.url, token)).status).toBe(303);
+    expect(access.waitlistEntry("guest@example.com")).toEqual(first);
+    const again = await browserLogin(harness.url, harness.google, "guest@example.com");
+    expect(again.status).toBe(302);
+    expect(await storePage(harness.url, waitlistCookie(again))).toContain("is on the waiting list");
+
+    // Sign out forgets the address: back to the public page.
+    const logout = await fetch(`${harness.url}/logout`, { headers: { Cookie: cookie }, redirect: "manual" });
+    expect(logout.headers.getSetCookie().some((c) => c.startsWith("gw_waitlist=") && c.includes("Expires="))).toBe(true);
+    const anonymous = await storePage(harness.url, "");
+    expect(anonymous).not.toContain("limited preview");
+    expect(anonymous).toContain('href="https://weather.example"');
+  });
+
+  it("lets an invitation through on the next sign-in, and a withdrawn one out on the next check", async () => {
+    const harness = await startHarness({}, { waitlist: true });
+    const access = harness.access!;
+    const refused = await browserLogin(harness.url, harness.google, "guest@example.com");
+    const cookie = waitlistCookie(refused);
+    await joinWaitlist(harness.url, /^gw_waitlist=(.*)$/u.exec(cookie)?.[1] ?? "");
+    expect(access.listWaitlist()).toHaveLength(1);
+
+    // Invited from "another process": a second store on the same files.
+    const cli = new AccessStore(harness.oauthDir, ["alice@example.com"]);
+    expect(cli.invite("guest@example.com")).toEqual({ status: "invited", fromWaitlist: true });
+
+    // The banner turns into the way in, and the cookie is cleared.
+    const invited = await fetch(harness.url, { headers: { Accept: "text/html", Cookie: cookie } });
+    const html = await invited.text();
+    expect(html).toContain("You are in.");
+    expect(html).not.toContain("invite only");
+    expect(invited.headers.getSetCookie().some((c) => c.startsWith("gw_waitlist=") && c.includes("Expires="))).toBe(true);
+
+    const login = await browserLogin(harness.url, harness.google, "guest@example.com", "/views");
+    expect(login.status).toBe(302);
+    expect(login.headers.get("location")).toBe("/views");
+    const session = (login.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+    expect(session).toContain("gw_session=");
+    const verify = await fetch(`${harness.url}/session/verify`, { headers: { Cookie: session } });
+    expect(verify.status).toBe(204);
+    expect(verify.headers.get("x-forwarded-user")).toBe("guest@example.com");
+    // A session beats a leftover waitlist cookie.
+    expect(await storePage(harness.url, `${session}; ${cookie}`)).not.toContain("limited preview");
+
+    expect(cli.uninvite("guest@example.com")).toBe("removed");
+    expect((await fetch(`${harness.url}/session/verify`, { headers: { Cookie: session } })).status).toBe(401);
+    expect((await browserLogin(harness.url, harness.google, "guest@example.com")).headers.get("location")).toBe("/");
+  });
+
+  it("refuses a join without a live token, and one for an account already in", async () => {
+    const harness = await startHarness({}, { waitlist: true });
+    const issuer = harness.url.replace(/:\d+$/u, "");
+    expect((await joinWaitlist(harness.url, "")).status).toBe(400);
+    expect((await joinWaitlist(harness.url, "not.a.token")).status).toBe(400);
+    const stale = signJwt(harness.signingKey, { iss: issuer, aud: "waitlist", sub: "guest@example.com", expiresInSec: -1 });
+    expect((await joinWaitlist(harness.url, stale)).status).toBe(400);
+    // A session token is not a waitlist token, whatever it says — in the
+    // form or as the cookie.
+    const session = signJwt(harness.signingKey, { iss: issuer, aud: "session", sub: "guest@example.com", expiresInSec: 600 });
+    expect((await joinWaitlist(harness.url, session)).status).toBe(400);
+    const page = await fetch(harness.url, { headers: { Accept: "text/html", Cookie: `gw_waitlist=${session}` } });
+    expect(await page.text()).not.toContain("limited preview");
+
+    const refused = await browserLogin(harness.url, harness.google, "guest@example.com");
+    const token = /^gw_waitlist=(.*)$/u.exec(waitlistCookie(refused))?.[1] ?? "";
+    harness.access!.invite("guest@example.com");
+    const late = await joinWaitlist(harness.url, token);
+    expect(late.status).toBe(400);
+    expect(await late.text()).toContain("already invited");
+    expect(harness.access!.listWaitlist()).toEqual([]);
+  });
+
+  it("tells an MCP client where the waiting list is, and keeps the old refusal without one", async () => {
+    const withList = await startHarness({}, { waitlist: true });
+    withList.google.setEmail("guest@example.com");
+    const client = await registerClient(withList.url);
+    const consent = await reachConsent(withList.url, client.client_id, pkcePair().challenge);
+    expect(consent.status).toBe(302);
+    const back = new URL(consent.location ?? "");
+    expect(back.searchParams.get("error")).toBe("access_denied");
+    expect(back.searchParams.get("error_description")).toContain("waiting list");
+    expect(withList.access!.listWaitlist()).toEqual([]);
+
+    const without = await startHarness();
+    const refused = await browserLogin(without.url, without.google, "guest@example.com");
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain("not allowed");
+    expect((await joinWaitlist(without.url, "anything")).status).toBe(400);
+    // A forged waitlist cookie means nothing to a gateway without a list.
+    const forged = signJwt(without.signingKey, { iss: without.url.replace(/:\d+$/u, ""), aud: "waitlist", sub: "guest@example.com", expiresInSec: 600 });
+    const page = await fetch(without.url, { headers: { Accept: "text/html", Cookie: `gw_waitlist=${forged}` } });
+    expect(await page.text()).not.toContain("limited preview");
+  });
 });

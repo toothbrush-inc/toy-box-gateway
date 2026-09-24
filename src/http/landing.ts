@@ -35,6 +35,25 @@ export interface StoreViewer {
   email: string;
 }
 
+/**
+ * A browser that signed in as someone not invited. The page is the same
+ * catalogue everyone sees, with a banner saying so and the hosted apps'
+ * "Open" links locked; the source links stay live, since running an app
+ * yourself needs no invitation. "offer" carries the one-time token that
+ * lets this browser ask; "waiting" says when it did; "invited" is the
+ * moment the invitation came through — one sign-in away from the apps.
+ */
+export interface StoreWaitlist {
+  email: string;
+  status: "offer" | "waiting" | "invited";
+  token?: string | undefined;
+  requestedAt?: string | undefined;
+  /** Where the join form posts. */
+  action: string;
+  /** Where "Sign in" goes once invited. */
+  signInPath: string;
+}
+
 export interface StoreModel {
   /** Hostname of the public URL — the wordmark when `store.name` is unset. */
   host: string;
@@ -48,6 +67,8 @@ export interface StoreModel {
   capabilities?: readonly StoreCapability[] | undefined;
   /** Where the top-right "Sign in" goes; absent when there is no login. */
   signInPath?: string | undefined;
+  /** Present for a signed-in-but-not-invited browser; never with `viewer`. */
+  waitlist?: StoreWaitlist | undefined;
 }
 
 /** The JSON twin of the page: the same facts, for the same viewer. */
@@ -58,6 +79,15 @@ export function storeJson(model: StoreModel): Record<string, unknown> {
     ...(model.mcpUrl === undefined ? {} : { mcpUrl: model.mcpUrl }),
     ...(model.viewer === undefined ? {} : { viewer: model.viewer }),
     ...(model.capabilities === undefined ? {} : { capabilities: model.capabilities }),
+    ...(model.waitlist === undefined
+      ? {}
+      : {
+          waitlist: {
+            email: model.waitlist.email,
+            status: model.waitlist.status,
+            ...(model.waitlist.requestedAt === undefined ? {} : { requestedAt: model.waitlist.requestedAt }),
+          },
+        }),
   };
 }
 
@@ -92,9 +122,15 @@ function chips(app: StoreApp): string {
 /** Primary action: open the page, or, for an agent-only app, go to the
  * assistant section. Secondary: the source repo, for running it yourself. */
 function actions(app: StoreApp, model: StoreModel): string {
+  // Not invited: the hosted apps are behind the same sign-in that just
+  // said no, so the link would only bounce them back here. Locked, not
+  // hidden — the tile still says the app exists and has a page.
+  const locked = model.waitlist !== undefined && model.waitlist.status !== "invited";
   const primary =
     app.href !== undefined
-      ? `<a class="tile-cta" href="${esc(app.href)}">Open ${esc(app.label)}</a>`
+      ? locked
+        ? `<span class="tile-cta tile-cta--locked">Open ${esc(app.label)} · invite only</span>`
+        : `<a class="tile-cta" href="${esc(app.href)}">Open ${esc(app.label)}</a>`
       : model.mcpUrl !== undefined
         ? `<a class="tile-cta" href="#assistant">Use from your assistant</a>`
         : `<span class="tile-cta">Use from your assistant</span>`;
@@ -213,11 +249,58 @@ function contactSection(model: StoreModel): string {
   );
 }
 
+/** The strip under the top bar for a browser that is not invited (yet). */
+function waitlistBanner(model: StoreModel): string {
+  const wait = model.waitlist;
+  if (wait === undefined) {
+    return "";
+  }
+  const name = model.store?.name ?? model.host;
+  const who = `<strong>${esc(wait.email)}</strong>`;
+  switch (wait.status) {
+    case "invited":
+      return (
+        `<aside class="notice notice--invited" role="status">` +
+        `<p class="notice-text"><strong>You are in.</strong> ${who} was invited — sign in again and the apps open.</p>` +
+        `<a class="btn btn--solid btn--small" href="${esc(wait.signInPath)}">Sign in</a></aside>`
+      );
+    case "waiting":
+      return (
+        `<aside class="notice notice--waiting" role="status">` +
+        `<p class="notice-text"><strong>${esc(name)} is in a limited preview.</strong> ${who} is on the waiting list` +
+        (wait.requestedAt === undefined ? "" : ` since ${esc(formatDay(wait.requestedAt))}`) +
+        `. Once you are invited, signing in here opens the apps. Until then, every app can still be run from its source.</p></aside>`
+      );
+    case "offer":
+      return (
+        `<aside class="notice notice--offer" role="status">` +
+        `<p class="notice-text"><strong>${esc(name)} is in a limited preview.</strong> Only invited accounts can open the apps here, ` +
+        `and ${who} is not one of them yet. Join the waiting list to be let in as places open up — nothing is kept beyond your address and when you asked.</p>` +
+        `<form method="post" action="${esc(wait.action)}" class="notice-form">` +
+        `<input type="hidden" name="token" value="${esc(wait.token ?? "")}">` +
+        `<button type="submit" class="btn btn--solid btn--small">Join the waiting list</button></form></aside>`
+      );
+  }
+}
+
+function formatDay(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return iso;
+  }
+  return date.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
+}
+
 function topBar(model: StoreModel): string {
   const name = model.store?.name ?? model.host;
   let account = "";
   if (model.viewer !== undefined) {
     account = `<span class="who">${esc(model.viewer.email)}</span><a class="btn btn--small" href="/logout">Sign out</a>`;
+  } else if (model.waitlist !== undefined) {
+    // Signed in as far as Google is concerned, not as far as the apps are:
+    // the address is shown so "not you?" has an answer, and Sign out
+    // forgets it.
+    account = `<span class="who">${esc(model.waitlist.email)}</span><a class="btn btn--small" href="/logout">Sign out</a>`;
   } else if (model.signInPath !== undefined) {
     account = `<a class="btn btn--small" href="${esc(model.signInPath)}">Sign in</a>`;
   }
@@ -248,7 +331,7 @@ export function renderStoreHtml(model: StoreModel): string {
     `<meta name="color-scheme" content="light dark">` +
     `<meta name="description" content="${esc(headline)}">` +
     `<title>${esc(name)}</title><style>${STORE_CSS}</style></head>` +
-    `<body><main class="store">${topBar(model)}${hero}${tiles}${agentSection(model)}${contactSection(model)}${footer}</main></body></html>`
+    `<body><main class="store">${topBar(model)}${waitlistBanner(model)}${hero}${tiles}${agentSection(model)}${contactSection(model)}${footer}</main></body></html>`
   );
 }
 
@@ -291,6 +374,12 @@ a{color:var(--link)}
 .btn--solid:hover{opacity:.88}
 .btn--small{padding:6px 12px;font-size:13.5px}
 .btn:focus-visible,.tile-cta:focus-visible,.wordmark:focus-visible{outline:3px solid var(--link);outline-offset:3px}
+.notice{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:18px;padding:16px 20px;border-radius:16px;background:var(--marigold);color:var(--ink);border:1px solid color-mix(in srgb,var(--marigold-deep),transparent 70%)}
+.notice--invited{background:var(--leaf);border-color:color-mix(in srgb,var(--leaf-deep),transparent 70%)}
+.notice-text{margin:0;flex:1 1 40ch;font-size:15.5px;line-height:1.5;text-wrap:pretty}
+.notice-form{margin:0}
+.notice .btn{border-color:var(--ink)}
+.tile-cta--locked{color:var(--ink-2);font-weight:500;cursor:default}
 .hero{padding:64px 0 40px;max-width:760px}
 .headline{margin:0;font:400 clamp(40px,6.4vw,68px)/1.02 var(--serif);letter-spacing:-.022em;text-wrap:balance}
 .lede{margin:22px 0 0;font-size:19px;line-height:1.5;color:var(--ink-2);max-width:52ch}
@@ -352,5 +441,5 @@ a.tile-cta::after{content:"";position:absolute;inset:0;border-radius:22px}
 .foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:72px;padding-top:18px;border-top:1px solid var(--hair);font-size:13.5px;color:var(--muted)}
 @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.tile{animation:none}}
-@media (max-width:520px){.store{padding:14px 16px 40px}.who{max-width:18ch}.hero{padding:40px 0 28px}.lede{font-size:17px;margin-top:16px}.tiles{gap:12px}.tile{padding:20px 18px 18px;border-radius:18px;gap:10px}a.tile-cta::after{border-radius:18px}.tile-name{font-size:28px}.tile-tag{font-size:17px}.sec{margin-top:48px}.sec-title{font-size:26px}.sec-lede{font-size:16px}.url{padding:12px 14px;font-size:14px}.actions .btn{flex:1 1 auto;text-align:center}.foot{margin-top:56px}}
+@media (max-width:520px){.store{padding:14px 16px 40px}.notice{padding:14px 16px;border-radius:14px}.notice .btn{flex:1 1 auto;text-align:center}.who{max-width:18ch}.hero{padding:40px 0 28px}.lede{font-size:17px;margin-top:16px}.tiles{gap:12px}.tile{padding:20px 18px 18px;border-radius:18px;gap:10px}a.tile-cta::after{border-radius:18px}.tile-name{font-size:28px}.tile-tag{font-size:17px}.sec{margin-top:48px}.sec-title{font-size:26px}.sec-lede{font-size:16px}.url{padding:12px 14px;font-size:14px}.actions .btn{flex:1 1 auto;text-align:center}.foot{margin-top:56px}}
 `.trim();
