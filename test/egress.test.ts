@@ -983,8 +983,12 @@ describe("hosted credential ownership and upstream budgets", () => {
 
   it("caps body bytes, concurrent requests and the total upstream duration", async () => {
     let signal: AbortSignal | null | undefined;
+    // The second request has to arrive while the first is still in flight
+    // to see the concurrency cap; the timeout is the width of that window,
+    // and 80ms was missed when the whole suite ran in parallel on a busy
+    // machine (the first had already timed out, freeing the slot).
     const harness = await startBroker({
-      maxResponseBytes: 8, fetchTimeoutMs: 80, maxConcurrentFetches: 1,
+      maxResponseBytes: 8, fetchTimeoutMs: 1000, maxConcurrentFetches: 1,
       upstream: (_url, init) => { signal = init?.signal; return new Promise<Response>(() => undefined); },
     });
     harness.seedVault.putGrant({ capability: "weather", connectionId: "purpleair:default", actions: ["read"] });
