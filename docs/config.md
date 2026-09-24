@@ -152,7 +152,7 @@ without that click.
 |---|---|---|
 | `oauth.google.clientIdVar` | string | `GATEWAY_GOOGLE_LOGIN_CLIENT_ID` |
 | `oauth.google.clientSecretVar` | string | `GATEWAY_GOOGLE_LOGIN_CLIENT_SECRET` |
-| `oauth.allowedEmails` | string[] | required, at least one |
+| `oauth.allowedEmails` | string[] | required, at least one — the seed; see the waiting list below |
 | `oauth.signingKeyFile` | string | required |
 | `oauth.storeDir` | string | required |
 | `oauth.accessTokenTtlSec` | integer | 3600 |
@@ -230,6 +230,32 @@ the user who started it. Stdio mode keeps its local shared-vault behavior.
 Removing an email from `allowedEmails` and restarting the gateway invalidates
 that user's access tokens, refresh tokens and browser cookies. Logout revokes
 the presented browser token on disk, including copies of it, until expiry.
+
+**The waiting list.** `allowedEmails` is the seed: the operator's own
+accounts, always in. Everyone else who signs in with Google is sent back to
+the store page with a banner instead of an error: the same catalogue, with
+each hosted app's "Open" locked (the source links stay live) and one
+button to join — no form, since Google has just vouched for the address.
+The request is recorded in `<storeDir>/waitlist.json`. What the browser
+gets is a `gw_waitlist` cookie (30 days, host-only) that only the store
+page reads, so `/session/verify` and every fronted app stay closed; once
+invited, the banner says so and the next sign-in is a real one.
+Invitations live next to the list in `<storeDir>/invited.json`:
+
+```sh
+capability-gateway waitlist                      # who is waiting, who was invited
+capability-gateway waitlist invite <email>       # let them in; drops them from the waiting list
+capability-gateway waitlist uninvite <email>     # withdraw; sessions and tokens stop on the next check
+capability-gateway waitlist remove <email>       # drop a request without inviting
+```
+
+Both files are re-read by the running gateway whenever they change, so an
+invitation takes effect on that person's next sign-in and a withdrawal on
+their next request — no restart. The banner tells someone already on the
+list when they asked; an MCP client signing in as an uninvited account gets
+`access_denied` with a description pointing at the store. The gateway sends
+nobody anything: telling an invited person is on you. The log records the
+address on each refused sign-in and each join, as it did for refusals.
 
 **Cookie domain trust:** keep `sessionCookieDomain` unset unless every sibling
 host is trusted. Domain cookies reach sibling hosts before gateway code can

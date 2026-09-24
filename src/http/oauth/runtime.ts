@@ -10,6 +10,7 @@ import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/p
 
 import { parseBearerTokens, type ServeConfig } from "../../config.js";
 import { staticTokenVerifier } from "../auth-static.js";
+import { AccessStore } from "./access.js";
 import { GatewayOAuthProvider } from "./provider.js";
 import { OAuthDiskStore } from "./store.js";
 
@@ -17,6 +18,8 @@ export interface ServeAuthRuntime {
   verifier: OAuthTokenVerifier;
   /** Present in stage 2: mounts the AS router + login/session routes. */
   provider?: GatewayOAuthProvider;
+  /** Present in stage 2: invitations and the waiting list on disk. */
+  access?: AccessStore;
   description: string;
 }
 
@@ -46,22 +49,37 @@ export function buildServeAuth(
       `oauth login requires $${oauth.google.clientIdVar} and $${oauth.google.clientSecretVar}`,
     );
   }
+  const access = accessStoreFor(oauth);
   const provider = new GatewayOAuthProvider({
     issuerUrl: serve.publicUrl,
     store: new OAuthDiskStore(oauth.storeDir),
     signingKey: loadOrCreateKey(oauth.signingKeyFile, log),
     allowedEmails: oauth.allowedEmails,
+    access,
     google: { clientId, clientSecret },
     accessTokenTtlSec: oauth.accessTokenTtlSec,
     refreshTokenTtlSec: oauth.refreshTokenTtlSec,
     scopesSupported: oauth.scopesSupported,
     log,
   });
+  const invited = access.listInvited().length;
   return {
     verifier: provider,
     provider,
-    description: `oauth AS (google login; allowed: ${oauth.allowedEmails.join(", ")})`,
+    access,
+    description:
+      `oauth AS (google login; allowed: ${oauth.allowedEmails.join(", ")}` +
+      `${invited === 0 ? "" : ` + ${String(invited)} invited`}; others may join the waiting list)`,
   };
+}
+
+/** The same files the `waitlist` CLI reads and writes, so an invitation
+ * from the command line is what the running gateway checks next. */
+export function accessStoreFor(oauth: {
+  storeDir: string;
+  allowedEmails: readonly string[];
+}): AccessStore {
+  return new AccessStore(oauth.storeDir, oauth.allowedEmails);
 }
 
 function loadOrCreateKey(path: string, log: (line: string) => void): Buffer {

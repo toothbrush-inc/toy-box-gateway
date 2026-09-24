@@ -1,6 +1,7 @@
 // The gateway as OAuth authorization server (stage 2). Google is only the
 // identity check inside authorize(): the gateway redirects there, verifies
-// the returned email against allowedEmails, and mints its OWN tokens — HS256
+// the returned email against allowedEmails (plus invitations, see
+// access.ts), and mints its OWN tokens — HS256
 // JWT access tokens plus rotating refresh tokens with family revocation
 // (replaying a rotated token kills its whole family). The same Google login
 // also backs browser sessions (a cookie) for the views/dashboard surfaces.
@@ -28,12 +29,19 @@ import {
   type GoogleEndpoints,
   type GoogleLoginCreds,
 } from "./google.js";
+import type { AccessStore, WaitlistEntry } from "./access.js";
 import { signJwt, verifyJwt } from "./jwt.js";
 import type { OAuthDiskStore } from "./store.js";
 
 const PENDING_TTL_MS = 10 * 60 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
 const CONSENT_TTL_MS = 10 * 60 * 1000;
+/** How long a browser keeps remembering who it signed in as while waiting
+ * to be invited: the banner on the store page, and the join button, live
+ * this long. Long enough to come back and check; short enough that a
+ * shared machine forgets. */
+const WAITLIST_TTL_SEC = 30 * 86_400;
+export const WAITLIST_COOKIE = "gw_waitlist";
 /** Anyone can start a login, so the pending map is bounded: past this many
  * in-flight attempts the oldest is dropped (its user starts over). */
 const MAX_PENDING = 5000;
@@ -113,6 +121,9 @@ export interface GatewayOAuthProviderOptions {
   store: OAuthDiskStore;
   signingKey: Buffer;
   allowedEmails: readonly string[];
+  /** Invitations and the waiting list, on top of `allowedEmails`. Absent →
+   * the config list is the whole story and nobody can wait. */
+  access?: AccessStore;
   google: GoogleLoginCreds;
   googleEndpoints?: GoogleEndpoints;
   fetchImpl?: typeof fetch;
@@ -131,7 +142,11 @@ export type GoogleCallbackResult =
       sessionCookie?: string;
     }
   /** An MCP client is asking: show the person the consent page. */
-  | { kind: "consent"; consent: ConsentPrompt };
+  | { kind: "consent"; consent: ConsentPrompt }
+  /** A browser signed in as someone not (yet) invited: send it to the
+   * store page carrying `token` as the waitlist cookie, which is what puts
+   * the banner up and lets this browser, and only this browser, ask. */
+  | { kind: "waitlist"; email: string; token: string };
 
 export class GatewayOAuthProvider implements OAuthServerProvider {
   private readonly pending = new Map<string, Pending>();
@@ -243,18 +258,38 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
       this.googleRedirectUri(),
       this.options.fetchImpl ?? fetch,
     );
-    if (!identity.emailVerified || !this.allowed.has(identity.email)) {
-      this.options.log(`[gateway] oauth login rejected for ${identity.email} (not on allowedEmails)`);
+    if (!identity.emailVerified || !this.isAllowed(identity.email)) {
+      this.options.log(`[gateway] oauth login rejected for ${identity.email} (not invited)`);
       if (entry.kind === "mcp") {
         return {
           kind: "redirect",
           redirectTo: clientRedirect({
             error: "access_denied",
-            error_description: "this account is not allowed on this gateway",
+            error_description:
+              this.options.access === undefined
+                ? "this account is not allowed on this gateway"
+                : `this account is not invited yet; open ${this.issuer} to join the waiting list`,
           }),
         };
       }
-      throw new Error("this account is not allowed on this gateway");
+      const access = this.options.access;
+      if (!identity.emailVerified || access === undefined) {
+        throw new Error("this account is not allowed on this gateway");
+      }
+      // Google vouched for the address; nothing else about this person is
+      // known or kept. The token lets this browser, and only this browser,
+      // ask to be let in — no session is issued to someone not invited.
+      const email = identity.email.toLowerCase();
+      return {
+        kind: "waitlist",
+        email,
+        token: signJwt(this.options.signingKey, {
+          iss: this.issuer,
+          aud: "waitlist",
+          sub: email,
+          expiresInSec: WAITLIST_TTL_SEC,
+        }),
+      };
     }
 
     if (entry.kind === "browser") {
@@ -295,6 +330,57 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
         scopes: entry.scopes,
       },
     };
+  }
+
+  /**
+   * What the store page shows a browser carrying the waitlist cookie: who
+   * it is, and whether they may ask, have asked, or have since been
+   * invited. Null for no or a stale cookie, and always null without a
+   * waiting list — the cookie then means nothing.
+   */
+  waitlistStatus(
+    cookie: string | undefined,
+  ): { email: string; status: "offer" | "waiting" | "invited"; requestedAt?: string } | null {
+    const access = this.options.access;
+    const payload =
+      access === undefined || cookie === undefined || cookie === ""
+        ? null
+        : verifyJwt(this.options.signingKey, cookie, { iss: this.issuer, aud: "waitlist" });
+    if (payload === null || access === undefined) {
+      return null;
+    }
+    const email = payload.sub;
+    if (this.isAllowed(email)) {
+      return { email, status: "invited" };
+    }
+    const entry = access.waitlistEntry(email);
+    return entry === undefined
+      ? { email, status: "offer" }
+      : { email, status: "waiting", requestedAt: entry.requestedAt };
+  }
+
+  /** The banner's one action. The token is the waitlist cookie's value,
+   * echoed by the form: it came from a Google sign-in that finished in this
+   * browser, so the address it names is verified. Asking twice keeps the
+   * first place. */
+  joinWaitlist(token: string | undefined): WaitlistEntry {
+    const access = this.options.access;
+    if (access === undefined) {
+      throw new Error("this gateway has no waiting list");
+    }
+    const payload =
+      token === undefined
+        ? null
+        : verifyJwt(this.options.signingKey, token, { iss: this.issuer, aud: "waitlist" });
+    if (payload === null) {
+      throw new Error("this sign-in has expired; sign in again to join the waiting list");
+    }
+    if (this.isAllowed(payload.sub)) {
+      throw new Error("this account is already invited; sign in again");
+    }
+    const entry = access.join(payload.sub);
+    this.options.log(`[gateway] waitlist joined by ${payload.sub}`);
+    return entry;
   }
 
   /** The person's answer to the consent page. Allow mints the code the
@@ -368,7 +454,7 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
     if (record === undefined || record.clientId !== client.client_id || record.expiresAt <= now) {
       throw new InvalidGrantError("refresh token is unknown or expired");
     }
-    if (!this.allowed.has(record.email)) {
+    if (!this.isAllowed(record.email)) {
       store.revokeFamily(record.family);
       throw new InvalidGrantError("account is no longer allowed");
     }
@@ -390,7 +476,7 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
 
   verifyAccessToken(token: string): Promise<AuthInfo> {
     const payload = verifyJwt(this.options.signingKey, token, { iss: this.issuer, aud: "mcp" });
-    if (payload === null || !this.allowed.has(payload.sub)) {
+    if (payload === null || !this.isAllowed(payload.sub)) {
       throw new InvalidTokenError("access token is invalid or expired");
     }
     const scope = typeof payload["scope"] === "string" ? payload["scope"] : "";
@@ -417,7 +503,7 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
       return null;
     }
     const payload = verifyJwt(this.options.signingKey, value, { iss: this.issuer, aud: "session" });
-    return payload === null || !this.allowed.has(payload.sub) ||
+    return payload === null || !this.isAllowed(payload.sub) ||
       this.options.store.isSessionRevoked(payload.jti) ? null : payload.sub;
   }
 
@@ -428,7 +514,7 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
   }
 
   private issueTokens(clientId: string, email: string, scopes: string[], family: string): OAuthTokens {
-    if (!this.allowed.has(email)) throw new InvalidGrantError("account is no longer allowed");
+    if (!this.isAllowed(email)) throw new InvalidGrantError("account is no longer allowed");
     const accessTtl = this.options.accessTokenTtlSec;
     const accessToken = signJwt(this.options.signingKey, {
       iss: this.issuer,
@@ -453,6 +539,14 @@ export class GatewayOAuthProvider implements OAuthServerProvider {
       refresh_token: refreshToken,
       scope: scopes.join(" "),
     };
+  }
+
+  /** The config list, or an invitation recorded since. Asked on every
+   * session check and token refresh, so withdrawing either takes effect on
+   * the next request rather than the next restart. */
+  private isAllowed(email: string): boolean {
+    const key = email.toLowerCase();
+    return this.allowed.has(key) || (this.options.access?.isAllowed(key) ?? false);
   }
 
   private prune(): void {
