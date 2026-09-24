@@ -246,6 +246,10 @@ export const GatewayConfigSchema = z.object({
           /** Governing law for the terms ("the State of California, USA");
            * omitted, the terms carry no such clause. */
           jurisdiction: z.string().min(1).max(120).optional(),
+          /** Where privacy and terms questions go. Defaults to
+           * `contact.email`; set it when that is a person and this should
+           * be a desk ("support@…"). */
+          contact: z.string().email().optional(),
         })
         .optional(),
     })

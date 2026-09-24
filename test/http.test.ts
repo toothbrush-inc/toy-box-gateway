@@ -52,7 +52,7 @@ async function startHarness(
       headline?: string;
       lede?: string;
       contact?: { email: string; byline?: string };
-      legal?: { operator: string; updated: string; jurisdiction?: string };
+      legal?: { operator: string; updated: string; jurisdiction?: string; contact?: string };
     };
     connectScopes?: string[];
     owners?: string[];
@@ -816,6 +816,17 @@ describe("privacy and terms pages", () => {
     const store = await (await fetch(harness.url, { headers: { Accept: "text/html" } })).text();
     expect(store).toContain('<a href="/privacy">Privacy</a>');
     expect(store).toContain('<a href="/terms">Terms</a>');
+  });
+
+  it("routes questions to legal.contact when set, leaving the store's own contact alone", async () => {
+    const harness = await startHarness({
+      store: { contact: { email: "dvd@example.com" }, legal: { ...legal, contact: "support@example.com" } },
+    });
+    const privacy = await (await fetch(`${harness.url}/privacy`)).text();
+    expect(privacy).toContain("mailto:support@example.com");
+    expect(privacy).not.toContain("dvd@example.com");
+    const store = await (await fetch(harness.url, { headers: { Accept: "text/html" } })).text();
+    expect(store).toContain("mailto:dvd@example.com");
   });
 
   it("adds the governing-law clause only when a jurisdiction is given, and an honest line for an app with no dataUse", async () => {

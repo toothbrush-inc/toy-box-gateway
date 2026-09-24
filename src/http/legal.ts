@@ -48,9 +48,15 @@ function formatDate(iso: string): string {
     : date.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
 }
 
+/** The address on these pages: the legal desk if there is one, else the
+ * store's contact. */
+function contactEmail(model: LegalModel): string | undefined {
+  return model.store.legal.contact ?? model.store.contact?.email;
+}
+
 function page(model: LegalModel, title: string, body: string): string {
   const name = model.store.name ?? model.host;
-  const contact = model.store.contact?.email;
+  const contact = contactEmail(model);
   const year = String(new Date().getFullYear());
   const nav = `<nav class="bar"><a class="wordmark" href="/">${esc(name)}</a><span class="bar-right"><a class="btn btn--small" href="/">All apps</a></span></nav>`;
   const foot =
@@ -79,7 +85,7 @@ function list(items: readonly string[]): string {
 }
 
 function contactLine(model: LegalModel): string {
-  const email = model.store.contact?.email;
+  const email = contactEmail(model);
   return email === undefined
     ? `Write to ${esc(model.store.legal.operator)} through the store page.`
     : `Write to <a href="mailto:${esc(email)}">${esc(email)}</a>.`;

@@ -109,7 +109,8 @@ live here and not on a document host.
   "legal": {
     "operator": "Toothbrush Inc.",       // the legal name behind the site
     "updated": "2026-09-24",             // effective date, YYYY-MM-DD
-    "jurisdiction": "the State of …"     // optional; omitted, no governing-law clause
+    "jurisdiction": "the State of …",    // optional; omitted, no governing-law clause
+    "contact": "support@…"               // optional; where questions go (defaults to contact.email)
   }
 }
 ```
