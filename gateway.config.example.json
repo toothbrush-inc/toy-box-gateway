@@ -20,8 +20,8 @@
       "args": [
         "mcp/server.mjs"
       ],
-      "cwd": "/path/to/weather-compare",
-      "manifestPath": "/path/to/weather-compare/capability.json",
+      "cwd": "/path/to/weather-patterns",
+      "manifestPath": "/path/to/weather-patterns/capability.json",
       "secretsAccess": "broker"
     },
     {

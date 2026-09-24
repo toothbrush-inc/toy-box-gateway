@@ -20,7 +20,7 @@ the logbook.
 ## Why this matters
 
 Without a gateway, every capability you install gets a copy of your keys. The
-weather app holds your PurpleAir key; the calendar app holds a token with
+[weather app](https://github.com/toothbrush-inc/weather-patterns) holds your PurpleAir key; the calendar app holds a token with
 permanent access to your Google calendars. Trusting an app means trusting it
 completely — and "revoking access" means hoping the app respects your wishes.
 
@@ -143,8 +143,8 @@ one and [docs/config.md](docs/config.md) for every field:
       "id": "weather",
       "command": "node",
       "args": ["mcp/server.mjs"],
-      "cwd": "/path/to/weather-compare",
-      "manifestPath": "/path/to/weather-compare/capability.json"
+      "cwd": "/path/to/weather-patterns",
+      "manifestPath": "/path/to/weather-patterns/capability.json"
     }
   ]
 }
