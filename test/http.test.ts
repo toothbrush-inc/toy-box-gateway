@@ -44,6 +44,7 @@ async function startHarness(
       highlights?: string[];
       badge?: string;
       accent?: "sky" | "leaf" | "marigold" | "plum" | "clay" | "slate";
+      dataUse?: string;
     };
     links?: { href: string; label: string; description?: string; repo?: string }[];
     store?: {
@@ -51,7 +52,9 @@ async function startHarness(
       headline?: string;
       lede?: string;
       contact?: { email: string; byline?: string };
+      legal?: { operator: string; updated: string; jurisdiction?: string };
     };
+    connectScopes?: string[];
     owners?: string[];
     sameClient?: boolean;
   } = {},
@@ -116,6 +119,7 @@ async function startHarness(
     } : staticTokenVerifier(tokens, serve.publicUrl),
     ...(options.links === undefined ? {} : { links: options.links }),
     ...(options.store === undefined ? {} : { store: options.store }),
+    ...(options.connectScopes === undefined ? {} : { connectScopes: options.connectScopes }),
     log: () => undefined,
   });
   cleanups.push(async () => {
@@ -771,4 +775,68 @@ it("serves CSP, frame and referrer protections and tolerates malformed cookies",
   expect(response.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
   expect(response.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
   expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+});
+
+describe("privacy and terms pages", () => {
+  const legal = { operator: "Toothbrush Inc.", updated: "2026-09-24" };
+
+  it("serves both pages publicly, written from the config, the apps and the scopes", async () => {
+    const harness = await startHarness({
+      manifestStore: { name: "Weather", tagline: "Know which forecast to trust.", web: { path: "/weather" } },
+      web: { dataUse: "Keeps the locations you add and the forecasts it collected for them." },
+      links: [{ href: "https://mail.example", label: "MailFeed" }],
+      store: { name: "Toy Box", contact: { email: "hello@example.com" }, legal },
+      connectScopes: ["https://www.googleapis.com/auth/calendar.events", "https://example.com/auth/unknown"],
+    });
+    const privacy = await fetch(`${harness.url}/privacy`);
+    expect(privacy.status).toBe(200);
+    expect(privacy.headers.get("content-type")).toContain("text/html");
+    const html = await privacy.text();
+    expect(html).toContain("<h1>Privacy</h1>");
+    expect(html).toContain("Effective September 24, 2026");
+    expect(html).toContain("Toothbrush Inc.");
+    expect(html).toContain("Limited Use requirements");
+    expect(html).toContain("read and edit events on the calendars you connect");
+    expect(html).toContain("https://example.com/auth/unknown");
+    expect(html).toContain("<strong>Weather</strong> — Keeps the locations you add");
+    // Sibling sites are named as separate, not covered.
+    expect(html).toContain("(MailFeed) are separate services");
+    expect(html).toContain("mailto:hello@example.com");
+    expect(html).not.toContain("Governing law");
+
+    const terms = await fetch(`${harness.url}/terms`);
+    expect(terms.status).toBe(200);
+    const termsHtml = await terms.text();
+    expect(termsHtml).toContain("<h1>Terms of use</h1>");
+    expect(termsHtml).toContain("Toothbrush Inc.");
+    expect(termsHtml).toContain("US$50");
+    expect(termsHtml).not.toContain("Governing law");
+
+    // The store's footer points at both.
+    const store = await (await fetch(harness.url, { headers: { Accept: "text/html" } })).text();
+    expect(store).toContain('<a href="/privacy">Privacy</a>');
+    expect(store).toContain('<a href="/terms">Terms</a>');
+  });
+
+  it("adds the governing-law clause only when a jurisdiction is given, and an honest line for an app with no dataUse", async () => {
+    const harness = await startHarness({
+      manifestStore: { name: "Weather", tagline: "Know which forecast to trust." },
+      store: { legal: { ...legal, jurisdiction: "the State of California, USA" } },
+    });
+    const terms = await (await fetch(`${harness.url}/terms`)).text();
+    expect(terms).toContain("Governing law");
+    expect(terms).toContain("the State of California, USA");
+    const privacy = await (await fetch(`${harness.url}/privacy`)).text();
+    expect(privacy).toContain("<strong>Weather</strong> — keeps whatever its feature needs");
+    // No contact email configured: the pages still say how to reach the operator.
+    expect(privacy).toContain("through the store page");
+  });
+
+  it("serves nothing, and links nothing, without store.legal", async () => {
+    const harness = await startHarness({ store: { name: "Toy Box" } });
+    expect((await fetch(`${harness.url}/privacy`)).status).toBe(404);
+    expect((await fetch(`${harness.url}/terms`)).status).toBe(404);
+    const store = await (await fetch(harness.url, { headers: { Accept: "text/html" } })).text();
+    expect(store).not.toContain('href="/privacy"');
+  });
 });

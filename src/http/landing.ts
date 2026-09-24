@@ -69,6 +69,8 @@ export interface StoreModel {
   signInPath?: string | undefined;
   /** Present for a signed-in-but-not-invited browser; never with `viewer`. */
   waitlist?: StoreWaitlist | undefined;
+  /** The privacy and terms pages, when the config's `store.legal` turns them on. */
+  legal?: { privacyPath: string; termsPath: string } | undefined;
 }
 
 /** The JSON twin of the page: the same facts, for the same viewer. */
@@ -324,7 +326,11 @@ export function renderStoreHtml(model: StoreModel): string {
       : `<section class="tiles" aria-label="Apps">${model.apps.map((app, index) => tile(app, index, model)).join("")}</section>`;
   const byline = model.store?.contact?.byline;
   const year = String(new Date().getFullYear());
-  const footer = `<footer class="foot"><span>${esc(byline ?? name)}</span><span>© ${year} ${esc(name)}</span></footer>`;
+  const legal =
+    model.legal === undefined
+      ? ""
+      : ` · <a href="${esc(model.legal.privacyPath)}">Privacy</a> · <a href="${esc(model.legal.termsPath)}">Terms</a>`;
+  const footer = `<footer class="foot"><span>${esc(byline ?? name)}${legal}</span><span>© ${year} ${esc(name)}</span></footer>`;
   return (
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">` +
@@ -439,6 +445,7 @@ a.tile-cta::after{content:"";position:absolute;inset:0;border-radius:22px}
 .actions{display:flex;flex-wrap:wrap;gap:12px;margin:22px 0 0}
 .quiet{margin:14px 0 0;color:var(--muted)}
 .foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:72px;padding-top:18px;border-top:1px solid var(--hair);font-size:13.5px;color:var(--muted)}
+.foot a{color:var(--muted);text-underline-offset:3px}
 @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.tile{animation:none}}
 @media (max-width:520px){.store{padding:14px 16px 40px}.notice{padding:14px 16px;border-radius:14px}.notice .btn{flex:1 1 auto;text-align:center}.who{max-width:18ch}.hero{padding:40px 0 28px}.lede{font-size:17px;margin-top:16px}.tiles{gap:12px}.tile{padding:20px 18px 18px;border-radius:18px;gap:10px}a.tile-cta::after{border-radius:18px}.tile-name{font-size:28px}.tile-tag{font-size:17px}.sec{margin-top:48px}.sec-title{font-size:26px}.sec-lede{font-size:16px}.url{padding:12px 14px;font-size:14px}.actions .btn{flex:1 1 auto;text-align:center}.foot{margin-top:56px}}

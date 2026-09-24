@@ -30,6 +30,9 @@ const StoreCopyShape = {
   accent: z.enum(STORE_ACCENTS).optional(),
   /** The open-source repository, for readers who want to run it themselves. */
   repo: HTTP_URL.optional(),
+  /** What the app reads and keeps about a person, in a sentence or two,
+   * for the privacy page. Written by the app: nobody else knows. */
+  dataUse: z.string().min(1).max(600).optional(),
 } as const;
 
 export const StoreCopySchema = z.object(StoreCopyShape);
@@ -56,6 +59,7 @@ export const ManifestStoreSchema = z.object({
   accent: StoreCopyShape.accent,
   web: z.object({ path: WEB_PATH }).optional(),
   repo: StoreCopyShape.repo,
+  dataUse: StoreCopyShape.dataUse,
 });
 export type ManifestStore = z.infer<typeof ManifestStoreSchema>;
 
@@ -227,6 +231,21 @@ export const GatewayConfigSchema = z.object({
           email: z.string().email(),
           /** Who the person is, in a few words ("Built by David"). */
           byline: z.string().min(1).max(120).optional(),
+        })
+        .optional(),
+      /** Turns on the public `/privacy` and `/terms` pages, linked from the
+       * store's footer. The gateway writes the text from what it knows —
+       * sign-in, tokens, connected accounts, each app's `dataUse` — and
+       * these are the facts only the operator can supply. */
+      legal: z
+        .object({
+          /** The legal name behind the site ("Toothbrush Inc.", "Jane Doe"). */
+          operator: z.string().min(1).max(120),
+          /** Effective date of the current text, YYYY-MM-DD. */
+          updated: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u, "updated must be YYYY-MM-DD"),
+          /** Governing law for the terms ("the State of California, USA");
+           * omitted, the terms carry no such clause. */
+          jurisdiction: z.string().min(1).max(120).optional(),
         })
         .optional(),
     })
