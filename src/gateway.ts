@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -65,7 +65,12 @@ import {
   UNPIN_VIEW_TOOL,
 } from "./views/tools.js";
 
-export const GATEWAY_VERSION = "0.7.0";
+/** The package version, read from package.json so `--version`, the MCP
+ * server info and `gateway_status` cannot drift from what was published.
+ * `../package.json` holds from both `dist/` and `src/` (the tests). */
+export const GATEWAY_VERSION: string = (
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }
+).version;
 
 type CallExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 

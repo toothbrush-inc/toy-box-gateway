@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AuditWriter, type AuditEntry } from "../src/audit.js";
 import { GatewayConfigSchema, type GatewayConfig } from "../src/config.js";
-import { createGateway, type Gateway } from "../src/gateway.js";
+import { createGateway, GATEWAY_VERSION, type Gateway } from "../src/gateway.js";
 import { PLANTED_CHILD_SECRET, startFakeWeather, type FakeCapability } from "./fakes.js";
 
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -330,4 +330,12 @@ it("ends a child call after 60 seconds even when progress keeps arriving", async
     expect(result.structuredContent).toMatchObject({ ok: false, error: { code: "call_failed" } });
     expect(ticks).toBeGreaterThan(0);
   } finally { vi.useRealTimers(); }
+});
+
+describe("GATEWAY_VERSION", () => {
+  it("is the package.json version, not a hand-maintained constant", () => {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    expect(GATEWAY_VERSION).toBe(pkg.version);
+    expect(GATEWAY_VERSION).toMatch(/^\d+\.\d+\.\d+/u);
+  });
 });

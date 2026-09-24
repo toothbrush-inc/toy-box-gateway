@@ -1,6 +1,6 @@
 {
   "name": "@dvd-toy-box/gateway",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "private": false,
   "description": "One sign-in, one place, and every app also works from your AI assistant. An MCP gateway that mounts capability servers, holds the keys, enforces grants and tool policy, audits every call, and serves the app store page.",
   "author": "Toothbrush, Inc.",
