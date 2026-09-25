@@ -612,8 +612,8 @@ describe("waiting list", () => {
     const html = await storePage(harness.url, cookie);
     expect(html).toContain("Toys is in a limited preview");
     expect(html).toContain("guest@example.com");
-    expect(html).toContain("Join the waiting list");
-    expect(html).toContain("invite only");
+    expect(html).toContain("Join the waitlist");
+    expect(html).toContain("· waitlist</span>");
     expect(html).not.toContain('href="https://weather.example"');
     expect(html).toContain('href="https://github.com/example/weather"');
     expect(html).toContain('href="/logout"');
@@ -637,9 +637,9 @@ describe("waiting list", () => {
     expect(access.isAllowed("guest@example.com")).toBe(false);
 
     const waiting = await storePage(harness.url, cookie);
-    expect(waiting).toContain("is on the waiting list");
+    expect(waiting).toContain("</strong> is on the waitlist as of");
     expect(waiting).not.toContain('name="token"');
-    expect(waiting).toContain("invite only");
+    expect(waiting).toContain("· waitlist</span>");
 
     // Asking again keeps the first place; a fresh sign-in lands on the same
     // banner with a fresh cookie.
@@ -648,13 +648,13 @@ describe("waiting list", () => {
     expect(access.waitlistEntry("guest@example.com")).toEqual(first);
     const again = await browserLogin(harness.url, harness.google, "guest@example.com");
     expect(again.status).toBe(302);
-    expect(await storePage(harness.url, waitlistCookie(again))).toContain("is on the waiting list");
+    expect(await storePage(harness.url, waitlistCookie(again))).toContain("</strong> is on the waitlist as of");
 
     // Sign out forgets the address: back to the public page.
     const logout = await fetch(`${harness.url}/logout`, { headers: { Cookie: cookie }, redirect: "manual" });
     expect(logout.headers.getSetCookie().some((c) => c.startsWith("gw_waitlist=") && c.includes("Expires="))).toBe(true);
     const anonymous = await storePage(harness.url, "");
-    expect(anonymous).not.toContain("limited preview");
+    expect(anonymous).not.toContain('class="notice');
     expect(anonymous).toContain('href="https://weather.example"');
   });
 
@@ -673,8 +673,8 @@ describe("waiting list", () => {
     // The banner turns into the way in, and the cookie is cleared.
     const invited = await fetch(harness.url, { headers: { Accept: "text/html", Cookie: cookie } });
     const html = await invited.text();
-    expect(html).toContain("You are in.");
-    expect(html).not.toContain("invite only");
+    expect(html).toContain("You're in!");
+    expect(html).not.toContain("· waitlist</span>");
     expect(invited.headers.getSetCookie().some((c) => c.startsWith("gw_waitlist=") && c.includes("Expires="))).toBe(true);
 
     const login = await browserLogin(harness.url, harness.google, "guest@example.com", "/views");
@@ -686,7 +686,7 @@ describe("waiting list", () => {
     expect(verify.status).toBe(204);
     expect(verify.headers.get("x-forwarded-user")).toBe("guest@example.com");
     // A session beats a leftover waitlist cookie.
-    expect(await storePage(harness.url, `${session}; ${cookie}`)).not.toContain("limited preview");
+    expect(await storePage(harness.url, `${session}; ${cookie}`)).not.toContain('class="notice');
 
     expect(cli.uninvite("guest@example.com")).toBe("removed");
     expect((await fetch(`${harness.url}/session/verify`, { headers: { Cookie: session } })).status).toBe(401);
@@ -705,7 +705,7 @@ describe("waiting list", () => {
     const session = signJwt(harness.signingKey, { iss: issuer, aud: "session", sub: "guest@example.com", expiresInSec: 600 });
     expect((await joinWaitlist(harness.url, session)).status).toBe(400);
     const page = await fetch(harness.url, { headers: { Accept: "text/html", Cookie: `gw_waitlist=${session}` } });
-    expect(await page.text()).not.toContain("limited preview");
+    expect(await page.text()).not.toContain('class="notice');
 
     const refused = await browserLogin(harness.url, harness.google, "guest@example.com");
     const token = /^gw_waitlist=(.*)$/u.exec(waitlistCookie(refused))?.[1] ?? "";
@@ -735,6 +735,6 @@ describe("waiting list", () => {
     // A forged waitlist cookie means nothing to a gateway without a list.
     const forged = signJwt(without.signingKey, { iss: without.url.replace(/:\d+$/u, ""), aud: "waitlist", sub: "guest@example.com", expiresInSec: 600 });
     const page = await fetch(without.url, { headers: { Accept: "text/html", Cookie: `gw_waitlist=${forged}` } });
-    expect(await page.text()).not.toContain("limited preview");
+    expect(await page.text()).not.toContain('class="notice');
   });
 });

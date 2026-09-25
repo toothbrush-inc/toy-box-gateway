@@ -131,7 +131,7 @@ function actions(app: StoreApp, model: StoreModel): string {
   const primary =
     app.href !== undefined
       ? locked
-        ? `<span class="tile-cta tile-cta--locked">Open ${esc(app.label)} · invite only</span>`
+        ? `<span class="tile-cta tile-cta--locked">Open ${esc(app.label)} · waitlist</span>`
         : `<a class="tile-cta" href="${esc(app.href)}">Open ${esc(app.label)}</a>`
       : model.mcpUrl !== undefined
         ? `<a class="tile-cta" href="#assistant">Use from your assistant</a>`
@@ -263,24 +263,24 @@ function waitlistBanner(model: StoreModel): string {
     case "invited":
       return (
         `<aside class="notice notice--invited" role="status">` +
-        `<p class="notice-text"><strong>You are in.</strong> ${who} was invited — sign in again and the apps open.</p>` +
+        `<p class="notice-text"><strong>You're in!</strong> Sign in again as ${who} to open the apps.</p>` +
         `<a class="btn btn--solid btn--small" href="${esc(wait.signInPath)}">Sign in</a></aside>`
       );
     case "waiting":
       return (
         `<aside class="notice notice--waiting" role="status">` +
-        `<p class="notice-text"><strong>${esc(name)} is in a limited preview.</strong> ${who} is on the waiting list` +
-        (wait.requestedAt === undefined ? "" : ` since ${esc(formatDay(wait.requestedAt))}`) +
-        `. Once you are invited, signing in here opens the apps. Until then, every app can still be run from its source.</p></aside>`
+        `<p class="notice-text">${who} is on the waitlist` +
+        (wait.requestedAt === undefined ? "" : ` as of ${esc(formatDay(wait.requestedAt))}`) +
+        `.</p></aside>`
       );
     case "offer":
       return (
         `<aside class="notice notice--offer" role="status">` +
-        `<p class="notice-text"><strong>${esc(name)} is in a limited preview.</strong> Only invited accounts can open the apps here, ` +
-        `and ${who} is not one of them yet. Join the waiting list to be let in as places open up — nothing is kept beyond your address and when you asked.</p>` +
+        `<p class="notice-text"><strong>${esc(name)} is in a limited preview.</strong> Join the waitlist for access to the hosted platform. ` +
+        `Until then, you can run these apps locally following instructions from the Open Source Repos linked below.</p>` +
         `<form method="post" action="${esc(wait.action)}" class="notice-form">` +
         `<input type="hidden" name="token" value="${esc(wait.token ?? "")}">` +
-        `<button type="submit" class="btn btn--solid btn--small">Join the waiting list</button></form></aside>`
+        `<button type="submit" class="btn btn--solid btn--small">Join the waitlist</button></form></aside>`
       );
   }
 }
